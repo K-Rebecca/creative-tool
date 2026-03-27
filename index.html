@@ -1,752 +1,543 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>素材发散工具</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; background: #0a0a0c; font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif; }
-  #root { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  ::-webkit-scrollbar { width: 5px; height: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 3px; }
-  input, select, button { font-family: inherit; }
-  input::placeholder { color: #4b4b55; }
-  select option { background: #1a1a1e; color: #e2e0db; }
-  @keyframes pulse { 0%,100%{opacity:.35} 50%{opacity:.8} }
-  @keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-  .fade-up { animation: fadeUp .25s ease both; }
-  .pulse { animation: pulse 1.4s ease-in-out infinite; }
+html,body{height:100%;margin:0;padding:0;background:#0a0a0c}
+#root{height:100vh}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useCallback, useRef, useEffect } = React;
+const{useState,useCallback,useRef,useEffect}=React;
 
-// ─── localStorage 缓存（自动保存，换浏览器会丢失）────────────────────────────
-const LS_TAGS      = "material_tool_tags_v2";
-const LS_GAMEPLAYS = "material_tool_gameplays_v1";
-const LS_TAG_ID    = "material_tool_tagid_v2";
-const LS_GP_ID     = "material_tool_gpid_v1";
+// ─── localStorage ─────────────────────────────────────────────────────────────
+const LS_TAGS="mst_tags_v2",LS_GAMEPLAYS="mst_gp_v1",LS_TAG_ID="mst_tagid_v2",LS_GP_ID="mst_gpid_v1",LS_AI_CFG="mst_aicfg_v1",LS_KB_ORDER="mst_kb_order_v1",LS_KB_CTR="mst_kb_ctr_v1";
+function lsGet(k,f){try{const v=localStorage.getItem(k);return v?JSON.parse(v):f;}catch{return f;}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){console.warn("lsSet overflow",k,e);}}
+function lsDel(k){try{localStorage.removeItem(k);}catch{}}
 
-function lsGet(key, fallback) {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
-  catch { return fallback; }
+// ─── 知识库 localStorage 持久化 ───────────────────────────────────────────────
+// 文字条目直接存 LS；图片/视频帧体积大，也存 LS，超限时给出提示而不是崩溃
+function saveKBItem(item){
+  try{lsSet(`mst_kb_item_${item.id}`,item);}
+  catch(e){
+    // 可能超 quota，删掉 base64 数据只保留 meta，防止崩溃
+    const light={...item};
+    if(light.data) light.data="[超出存储限制，已清除]";
+    if(light.preview) light.preview="";
+    if(light.frames) light.frames=light.frames.map(f=>({...f,b64:"",preview:""}));
+    try{lsSet(`mst_kb_item_${item.id}`,light);}catch{}
+    return false;
+  }
+  return true;
 }
-function lsSet(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+function loadKBFromLS(){
+  const order=lsGet(LS_KB_ORDER,[]);
+  const counter=lsGet(LS_KB_CTR,1);
+  const items=[];
+  for(const{id,disabled}of order){
+    const item=lsGet(`mst_kb_item_${id}`,null);
+    if(item)items.push({...item,disabled:!!disabled});
+  }
+  return{items,counter};
 }
+function saveKBOrder(arr){lsSet(LS_KB_ORDER,arr.map(i=>({id:i.id,disabled:!!i.disabled})));}
+function deleteKBItem(id){lsDel(`mst_kb_item_${id}`);}
 
-// ─── 导出 JSON 配置文件 ───────────────────────────────────────────────────────
-function exportConfig(tags, gameplays, tagIdVal, gpIdVal) {
-  const cfg = {
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    tags,
-    gameplays,
-    _tagIdNext: tagIdVal,
-    _gpIdNext: gpIdVal,
-  };
-  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `素材标签配置_${new Date().toLocaleDateString("zh-CN").replace(/\//g,"-")}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
+// ─── 工具函数 ─────────────────────────────────────────────────────────────────
+function exportConfig(tags,gameplays,ti,gi){const cfg={version:1,exportedAt:new Date().toISOString(),tags,gameplays,_tagIdNext:ti,_gpIdNext:gi};const b=new Blob([JSON.stringify(cfg,null,2)],{type:"application/json"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`素材标签配置_${new Date().toLocaleDateString("zh-CN").replace(/\//g,"-")}.json`;a.click();URL.revokeObjectURL(u);}
+function importConfig(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>{try{const c=JSON.parse(e.target.result);if(!c.tags||!c.gameplays)throw new Error("格式不正确");res(c);}catch(e){rej(e);}};r.onerror=()=>rej(new Error("读取失败"));r.readAsText(file);});}
+function fileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>res(e.target.result.split(",")[1]);r.onerror=()=>rej(new Error("读取失败"));r.readAsDataURL(file);});}
+function fileToText(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=e=>res(e.target.result);r.onerror=()=>rej(new Error("读取失败"));r.readAsText(file,"utf-8");});}
 
-// ─── 导入 JSON 配置文件 ───────────────────────────────────────────────────────
-function importConfig(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const cfg = JSON.parse(e.target.result);
-        if (!cfg.tags || !cfg.gameplays) throw new Error("格式不正确");
-        resolve(cfg);
-      } catch(err) { reject(err); }
+// ─── 视频抽帧 ─────────────────────────────────────────────────────────────────
+function extractVideoFrames(file,frameCount=6){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file);
+    const video=document.createElement("video");
+    video.muted=true;video.playsInline=true;video.preload="metadata";video.src=url;
+    video.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("视频加载失败"));};
+    video.onloadedmetadata=()=>{
+      const dur=video.duration;
+      if(!dur||!isFinite(dur)){URL.revokeObjectURL(url);reject(new Error("无法读取视频时长"));return;}
+      const canvas=document.createElement("canvas");
+      const scale=Math.min(1,640/video.videoWidth);
+      canvas.width=Math.round(video.videoWidth*scale);
+      canvas.height=Math.round(video.videoHeight*scale);
+      const ctx=canvas.getContext("2d");
+      const frames=[];
+      const times=Array.from({length:frameCount},(_,i)=>dur*(i+0.5)/frameCount);
+      let idx=0;
+      const seek=()=>{if(idx>=times.length){URL.revokeObjectURL(url);resolve(frames);return;}video.currentTime=times[idx];};
+      video.onseeked=()=>{
+        ctx.drawImage(video,0,0,canvas.width,canvas.height);
+        const dataURL=canvas.toDataURL("image/jpeg",0.65);
+        const b64=dataURL.split(",")[1];
+        const ts=times[idx];
+        const label=`${Math.floor(ts/60).toString().padStart(2,"0")}:${Math.floor(ts%60).toString().padStart(2,"0")}`;
+        frames.push({b64,preview:dataURL,label});
+        idx++;seek();
+      };
+      seek();
     };
-    reader.onerror = () => reject(new Error("文件读取失败"));
-    reader.readAsText(file);
+    video.load();
   });
 }
 
-const INITIAL_GAMEPLAYS = [
-  { id:"g1", label:"消除" }, { id:"g2", label:"合成" }, { id:"g3", label:"JAM" },
-  { id:"g4", label:"塔防" }, { id:"g5", label:"整理" }, { id:"g6", label:"模拟" }, { id:"g7", label:"放置" },
-];
+// ─── 数据常量 ─────────────────────────────────────────────────────────────────
+const INITIAL_GAMEPLAYS=[{id:"g1",label:"消除"},{id:"g2",label:"合成"},{id:"g3",label:"JAM"},{id:"g4",label:"塔防"},{id:"g5",label:"整理"},{id:"g6",label:"模拟"},{id:"g7",label:"放置"}];
+const INITIAL_TAGS={片头类型:[{id:1,name:"真人口播片头",rating:"S",active:true},{id:2,name:"文字口播片头",rating:"A",active:true},{id:3,name:"选关卡片头",rating:"A",active:true},{id:4,name:"冲突开场片头",rating:"S",active:true},{id:5,name:"奇幻AI片头",rating:"B",active:true}],模型类别:[{id:6,name:"房子建筑类",rating:"A",active:true},{id:7,name:"动物类",rating:"S",active:true},{id:8,name:"食物类",rating:"A",active:true},{id:9,name:"玩具类",rating:"B",active:true}],场景地图:[{id:10,name:"J型道路地图",rating:"A",active:true},{id:11,name:"B型道路地图",rating:"A",active:true},{id:12,name:"高空平台道路地图",rating:"B",active:true},{id:13,name:"下雨天",rating:"B",active:true},{id:14,name:"雪天",rating:"C",active:true}],结尾设计:[{id:15,name:"危机失败结局",rating:"S",active:true},{id:16,name:"开放式结局",rating:"A",active:true},{id:17,name:"成功结局",rating:"B",active:true}],核心情绪动机:[{id:18,name:"挑战欲",rating:"A",active:true},{id:19,name:"紧张压力感",rating:"S",active:true},{id:20,name:"好奇心",rating:"S",active:true},{id:21,name:"掌控感",rating:"A",active:true},{id:22,name:"爽感解压",rating:"A",active:true}],玩法创新:[{id:23,name:"回形针传送带",rating:"A",active:true},{id:24,name:"解救剧情",rating:"A",active:true},{id:25,name:"订单玩法",rating:"B",active:true},{id:26,name:"堆叠元素",rating:"B",active:true}],剧情结构:[{id:27,name:"冲突—失败结局",rating:"S",active:true},{id:28,name:"视觉吸引",rating:"A",active:true},{id:29,name:"利益诱导",rating:"A",active:true},{id:30,name:"互动选择",rating:"B",active:true}]};
+const RC={S:{bg:"#7c2d12",text:"#fbbf24",border:"#f59e0b"},A:{bg:"#14532d",text:"#6ee7b7",border:"#10b981"},B:{bg:"#1e3a5f",text:"#93c5fd",border:"#3b82f6"},C:{bg:"#1f2937",text:"#9ca3af",border:"#6b7280"}};
+const RL={S:"核心",A:"高效",B:"辅助",C:"备用"};
+const EC=["#f87171","#fb923c","#fbbf24","#34d399","#60a5fa","#a78bfa","#f472b6"];
 
-const INITIAL_TAGS = {
-  片头类型: [
-    { id:1,  name:"真人口播片头", rating:"S", active:true },
-    { id:2,  name:"文字口播片头", rating:"A", active:true },
-    { id:3,  name:"选关卡片头",   rating:"A", active:true },
-    { id:4,  name:"冲突开场片头", rating:"S", active:true },
-    { id:5,  name:"奇幻AI片头",   rating:"B", active:true },
-  ],
-  模型类别: [
-    { id:6,  name:"房子建筑类",   rating:"A", active:true },
-    { id:7,  name:"动物类",       rating:"S", active:true },
-    { id:8,  name:"食物类",       rating:"A", active:true },
-    { id:9,  name:"玩具类",       rating:"B", active:true },
-  ],
-  场景地图: [
-    { id:10, name:"J型道路地图",     rating:"A", active:true },
-    { id:11, name:"B型道路地图",     rating:"A", active:true },
-    { id:12, name:"高空平台道路地图", rating:"B", active:true },
-    { id:13, name:"下雨天",          rating:"B", active:true },
-    { id:14, name:"雪天",            rating:"C", active:true },
-  ],
-  结尾设计: [
-    { id:15, name:"危机失败结局", rating:"S", active:true },
-    { id:16, name:"开放式结局",   rating:"A", active:true },
-    { id:17, name:"成功结局",     rating:"B", active:true },
-  ],
-  核心情绪动机: [
-    { id:18, name:"挑战欲",   rating:"A", active:true },
-    { id:19, name:"紧张压力感", rating:"S", active:true },
-    { id:20, name:"好奇心",   rating:"S", active:true },
-    { id:21, name:"掌控感",   rating:"A", active:true },
-    { id:22, name:"爽感解压", rating:"A", active:true },
-  ],
-  玩法创新: [
-    { id:23, name:"回形针传送带", rating:"A", active:true },
-    { id:24, name:"解救剧情",     rating:"A", active:true },
-    { id:25, name:"订单玩法",     rating:"B", active:true },
-    { id:26, name:"堆叠元素",     rating:"B", active:true },
-  ],
-  剧情结构: [
-    { id:27, name:"冲突—失败结局", rating:"S", active:true },
-    { id:28, name:"视觉吸引",      rating:"A", active:true },
-    { id:29, name:"利益诱导",      rating:"A", active:true },
-    { id:30, name:"互动选择",      rating:"B", active:true },
-  ],
+// ─── API 厂商 ─────────────────────────────────────────────────────────────────
+const PROVIDERS={
+  anthropic:{label:"Anthropic (Claude)",format:"anthropic",baseURL:"https://api.anthropic.com/v1/messages",models:["claude-sonnet-4-20250514","claude-opus-4-5","claude-haiku-4-5-20251001"],defaultModel:"claude-sonnet-4-20250514",keyPlaceholder:"sk-ant-api03-..."},
+  openai:   {label:"OpenAI (GPT)",      format:"openai",   baseURL:"https://api.openai.com/v1/chat/completions",models:["gpt-4o","gpt-4o-mini","gpt-4-turbo","gpt-3.5-turbo"],defaultModel:"gpt-4o",keyPlaceholder:"sk-..."},
+  deepseek: {label:"DeepSeek",          format:"openai",   baseURL:"https://api.deepseek.com/v1/chat/completions",models:["deepseek-chat","deepseek-reasoner"],defaultModel:"deepseek-chat",keyPlaceholder:"sk-..."},
+  moonshot: {label:"Moonshot (Kimi)",   format:"openai",   baseURL:"https://api.moonshot.cn/v1/chat/completions",models:["moonshot-v1-8k","moonshot-v1-32k","moonshot-v1-128k"],defaultModel:"moonshot-v1-8k",keyPlaceholder:"sk-..."},
+  qwen:     {label:"通义千问 (Qwen)",   format:"openai",   baseURL:"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",models:["qwen-max","qwen-plus","qwen-turbo"],defaultModel:"qwen-plus",keyPlaceholder:"sk-..."},
+  zhipu:    {label:"智谱 GLM",          format:"openai",   baseURL:"https://open.bigmodel.cn/api/paas/v4/chat/completions",models:["glm-4","glm-4-flash","glm-4-air"],defaultModel:"glm-4-flash",keyPlaceholder:"your-api-key"},
+  custom:   {label:"自定义 (OpenAI兼容)",format:"openai",  baseURL:"",models:[],defaultModel:"",keyPlaceholder:"your-api-key"},
 };
+const DEFAULT_AI_CFG={providerId:"anthropic",apiKey:"",model:"claude-sonnet-4-20250514",customBaseURL:"",customModel:""};
 
-const RC = {
-  S:{ bg:"#7c2d12", text:"#fbbf24", border:"#f59e0b" },
-  A:{ bg:"#14532d", text:"#6ee7b7", border:"#10b981" },
-  B:{ bg:"#1e3a5f", text:"#93c5fd", border:"#3b82f6" },
-  C:{ bg:"#1f2937", text:"#9ca3af", border:"#6b7280" },
-};
-const RL = { S:"核心", A:"高效", B:"辅助", C:"备用" };
-const EC = ["#f87171","#fb923c","#fbbf24","#34d399","#60a5fa","#a78bfa","#f472b6"];
-
-const PROVIDERS = {
-  anthropic:{ label:"Anthropic (Claude)", baseURL:"https://api.anthropic.com/v1/messages",                                      defaultModel:"claude-sonnet-4-20250514", models:["claude-opus-4-5","claude-sonnet-4-20250514","claude-haiku-4-5-20251001"], format:"anthropic", keyPlaceholder:"sk-ant-api03-..." },
-  openai:   { label:"OpenAI (GPT)",       baseURL:"https://api.openai.com/v1/chat/completions",                                  defaultModel:"gpt-4o",                   models:["gpt-4o","gpt-4o-mini","gpt-4-turbo","gpt-3.5-turbo"],                  format:"openai",    keyPlaceholder:"sk-..." },
-  deepseek: { label:"DeepSeek",           baseURL:"https://api.deepseek.com/v1/chat/completions",                                defaultModel:"deepseek-chat",            models:["deepseek-chat","deepseek-reasoner"],                                   format:"openai",    keyPlaceholder:"sk-..." },
-  moonshot: { label:"Moonshot (Kimi)",    baseURL:"https://api.moonshot.cn/v1/chat/completions",                                 defaultModel:"moonshot-v1-8k",           models:["moonshot-v1-8k","moonshot-v1-32k","moonshot-v1-128k"],                 format:"openai",    keyPlaceholder:"sk-..." },
-  qwen:     { label:"通义千问 (Qwen)",    baseURL:"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",          defaultModel:"qwen-plus",                models:["qwen-max","qwen-plus","qwen-turbo","qwen-long"],                       format:"openai",    keyPlaceholder:"sk-..." },
-  zhipu:    { label:"智谱 GLM",           baseURL:"https://open.bigmodel.cn/api/paas/v4/chat/completions",                       defaultModel:"glm-4-flash",              models:["glm-4","glm-4-flash","glm-4-air"],                                     format:"openai",    keyPlaceholder:"your-api-key" },
-  custom:   { label:"自定义 (OpenAI兼容)",baseURL:"",                                                                             defaultModel:"",                         models:[],                                                                      format:"openai",    keyPlaceholder:"your-api-key" },
-};
-
-async function callAI(sys, user, cfg) {
-  const { providerId, apiKey, model, customBaseURL, customModel } = cfg;
-  const prov = PROVIDERS[providerId] || PROVIDERS.anthropic;
-  const baseURL = providerId==="custom" ? customBaseURL : prov.baseURL;
-  const finalModel = providerId==="custom" ? customModel : (model || prov.defaultModel);
-  if (!apiKey) throw new Error("请先在设置中填写 API Key");
-  if (!baseURL) throw new Error("请填写 API 地址");
-  let headers, body;
-  if (prov.format==="anthropic") {
-    headers = { "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" };
-    body = JSON.stringify({ model:finalModel, max_tokens:2000, system:sys, messages:[{role:"user",content:user}] });
-  } else {
-    headers = { "Content-Type":"application/json", "Authorization":`Bearer ${apiKey}` };
-    body = JSON.stringify({ model:finalModel, max_tokens:2000, messages:[{role:"system",content:sys},{role:"user",content:user}] });
+// ─── callAI ───────────────────────────────────────────────────────────────────
+function buildKBContext(kb){
+  if(!kb||!kb.length)return{sysAppend:"",imageBlocks:[]};
+  const textItems=kb.filter(i=>i.type==="text"||i.type==="script");
+  const imgItems=kb.filter(i=>i.type==="image");
+  const vidItems=kb.filter(i=>i.type==="video");
+  let sysAppend="";
+  if(textItems.length){
+    sysAppend+="\n\n【知识库 - 文字参考，请充分学习后再生成】\n";
+    textItems.forEach((it,i)=>{ sysAppend+=`\n--- 参考${i+1}「${it.name}」---\n${it.content}\n`; });
+    sysAppend+="\n【文字参考结束，风格与策略请与以上内容对齐】\n";
   }
-  const res = await fetch(baseURL, { method:"POST", headers, body });
-  if (!res.ok) { const t = await res.text().catch(()=>""); throw new Error(`HTTP ${res.status}${t?": "+t.slice(0,120):""}`); }
-  const data = await res.json();
-  return prov.format==="anthropic"
-    ? (data.content?.map(c=>c.text||"").join("")||"")
-    : (data.choices?.[0]?.message?.content||"");
+  const imageBlocks=[];
+  imgItems.forEach(it=>{if(it.data&&!it.data.startsWith("["))imageBlocks.push({b64:it.data,mediaType:it.mediaType,label:`图片「${it.name}」`});});
+  vidItems.forEach(it=>{(it.frames||[]).forEach((f,fi)=>{if(f.b64)imageBlocks.push({b64:f.b64,mediaType:"image/jpeg",label:`视频「${it.name}」帧${fi+1}(${f.label})`});});});
+  return{sysAppend,imageBlocks};
 }
 
-function robustParse(raw) {
-  if (!raw || !raw.trim()) return null;
-  const s = raw.trim();
-  // 1. 直接解析
-  try { return JSON.parse(s); } catch {}
-  // 2. 去掉 markdown 代码块
-  const stripped = s.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,"").trim();
-  try { return JSON.parse(stripped); } catch {}
-  // 3. 提取最外层 JSON 数组（从第一个 [ 到最后一个 ]）
-  const arrStart = s.indexOf("["), arrEnd = s.lastIndexOf("]");
-  if (arrStart !== -1 && arrEnd > arrStart) {
-    try { return JSON.parse(s.slice(arrStart, arrEnd + 1)); } catch {}
+async function callAI(sys,user,kb=[],aiCfg=DEFAULT_AI_CFG){
+  const{sysAppend,imageBlocks}=buildKBContext(kb);
+  const fullSys=sys+sysAppend;
+  const prov=PROVIDERS[aiCfg.providerId]||PROVIDERS.anthropic;
+  const baseURL=aiCfg.providerId==="custom"?aiCfg.customBaseURL:prov.baseURL;
+  const model=aiCfg.providerId==="custom"?aiCfg.customModel:(aiCfg.model||prov.defaultModel);
+  if(!baseURL)throw new Error("请先在设置中填写 API 地址");
+  if(!aiCfg.apiKey)throw new Error("请先在设置 ⚙ 中填写 API Key");
+  let userContent;
+  if(imageBlocks.length){
+    const parts=imageBlocks.map(img=>({type:"image",source:{type:"base64",media_type:img.mediaType,data:img.b64}}));
+    parts.push({type:"text",text:`【以上${imageBlocks.length}张图为知识库参考（${imageBlocks.map((img,i)=>`图${i+1}：${img.label}`).join("、")}），请仔细分析后结合任务生成内容】\n\n${user}`});
+    userContent=parts;
+  }else{userContent=user;}
+  let headers,body;
+  if(prov.format==="anthropic"){
+    headers={"Content-Type":"application/json","x-api-key":aiCfg.apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"};
+    body=JSON.stringify({model,max_tokens:2000,system:fullSys,messages:[{role:"user",content:userContent}]});
+  }else{
+    headers={"Content-Type":"application/json","Authorization":`Bearer ${aiCfg.apiKey}`};
+    body=JSON.stringify({model,max_tokens:2000,messages:[{role:"system",content:fullSys},{role:"user",content:userContent}]});
   }
-  // 4. 提取最外层 JSON 对象（兼容 {ideas:[...]} 包装格式）
-  const objStart = s.indexOf("{"), objEnd = s.lastIndexOf("}");
-  if (objStart !== -1 && objEnd > objStart) {
-    try { return JSON.parse(s.slice(objStart, objEnd + 1)); } catch {}
-  }
-  return null;
+  const res=await fetch(baseURL,{method:"POST",headers,body});
+  if(!res.ok){const t=await res.text().catch(()=>"");throw new Error(`HTTP ${res.status}${t?": "+t.slice(0,160):""}`);}
+  const data=await res.json();
+  return prov.format==="anthropic"?(data.content?.map(c=>c.text||"").join("")||""):(data.choices?.[0]?.message?.content||"");
 }
 
-async function fetchPSD(gameplay, idea, cfg) {
-  const sys = `你是资深手游买量广告的视觉设计总监，精通短视频广告的平面素材制作规范。
+function robustParse(raw){if(!raw?.trim())return null;const s=raw.trim();try{return JSON.parse(s);}catch{}const st=s.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,"").trim();try{return JSON.parse(st);}catch{}const a1=s.indexOf("["),a2=s.lastIndexOf("]");if(a1!==-1&&a2>a1)try{return JSON.parse(s.slice(a1,a2+1));}catch{}const o1=s.indexOf("{"),o2=s.lastIndexOf("}");if(o1!==-1&&o2>o1)try{return JSON.parse(s.slice(o1,o2+1));}catch{}return null;}
 
-任务：根据创意方向，输出整个创意所需的一份完整PSD平面素材制作规格。
-
-核心原则：
-- 重点描述图案、场景环境、主要角色/道具的视觉细节
-- 尽量减少文字类图层，如需提及文字层，只保留1-2个且一笔带过，不展开描述
-- 图层数量10-14个，按从底到顶排列
-
-图层描述规范：
-✅ 重点描述：
-- 场景环境：光线方向、时间氛围、空间纵深、材质质感（如"黄昏侧光打在石板路上，远处建筑轮廓虚化形成景深"）
-- 主角/核心道具：姿态、表情、材质、体积感、在画面中的位置与大小（如"卡通猫咪正面站立，毛发蓬松柔软，眼神聚焦向右，占画面高度55%"）
-- 配角/辅助元素：与主角的层次关系、数量、分布（如"3只小动物散落在主角周围，错落排布，大小递减形成透视"）
-- 光效/粒子/特效：发光范围、颜色、密度、与主体的交互方式
-- 色调氛围层：覆盖颜色、混合模式、透明度，及其对整体氛围的作用
-
-❌ 不需要描述：钩子文案内容、CTA按钮文字、评分背书等文字性图层
-
-style字段：整体视觉风格（色调、光影参考、氛围感）。
-notes字段：主配色方案（给出色值）、角色/场景的绘制建议、光影处理技巧，不提字体。
-
-只输出一个JSON对象，直接以 { 开头、以 } 结尾，禁止任何解释和markdown。
-格式：{"name":"文件名.psd","size":"尺寸","style":"整体视觉风格定调","layers":["图层1详细描述","图层2详细描述"],"notes":"配色方案、视觉制作要点"}`;
-
-  const user = `游戏玩法类型：${gameplay}
-创意标题：${idea.title}
-片头钩子文案：${idea.hook || ""}
-核心玩法描述：${idea.concept}
-使用的标签元素：${(idea.tags||[]).join("、")}
-主情绪：${idea.emotion}
-预期用户反应：${idea.effect || ""}
-
-请针对以上创意方向，输出整个创意所用到的完整PSD图层规格（一份文件，覆盖所有视觉元素）。`;
-
-  const raw = await callAI(sys, user, cfg);
-  const p = robustParse(raw);
-  // 兼容单对象或数组首项
-  const item = (p && !Array.isArray(p) && p.name) ? p : (Array.isArray(p) && p.length ? p[0] : null);
-  if (item) return item;
-  return {
-    name: `${idea.title}_素材合集.psd`,
-    size: "1080x1920",
-    style: `以「${idea.emotion}」为核心情绪基调，写实与卡通融合风格，低饱和暗色背景衬托高饱和主体，强调空间纵深感`,
-    layers: [
-      `远景背景板：模糊虚化的游戏场景全貌（高斯模糊12px），暖色调天空与地面各占50%，奠定空间尺度感`,
-      `中景环境元素：${(idea.tags||[]).slice(0,2).join("、")} 相关场景道具散落分布，边缘柔化融入背景，增加画面层次`,
-      `地面/平台层：角色站立的支撑面，材质纹理清晰（如石板/草地/金属板），带有轻微透视角度`,
-      `场景光源层：主光源方向（右上45°）的光柱或光晕，颜色偏暖黄（#ffe4a0），叠加模式「滤色」，透明度60%`,
-      `配角元素组A：3-4个辅助道具或小角色，体积约主角的30%，错落散布在主角两侧及后方`,
-      `主角角色/核心道具：正面或3/4侧身姿态，表情/状态契合「${idea.emotion}」，体积占画面高度55-60%，边缘有轻微外发光`,
-      `主角投影：主角脚下椭圆形软阴影，颜色深棕（#2a1a0a），正片叠底，透明度50%，增加落地感`,
-      `交互特效层：主角手部/作用点的爆发光效，颜色与角色主色互补，粒子向四周发散半径约200px`,
-      `前景遮挡物：画面左下或右下角的近景元素（草丛/岩石/道具边角），制造前后景纵深关系`,
-      `氛围粒子层：画面中散落的漂浮粒子（尘埃/光点/泡泡），大小2-6px，分布随机，透明度20-50%`,
-      `情绪色调蒙版：对应「${idea.emotion}」的整体色调覆盖，叠加模式「柔光」，透明度25%，统一全图色温`,
-      `全局锐化/对比调整层：整体对比度+12%、饱和度+10%、中间调稍提亮，置于顶层`,
-    ],
-    notes: `主配色：背景区深蓝灰（#12141f）+ 中景暖棕（#3d2b1a）+ 主角高饱和主色（根据角色设定选取）+ 特效点缀亮黄（#ffd966）。场景建议使用游戏内实机截图作为底图，叠加手绘质感纹理提升精致度。主角边缘建议添加1-2px的外描边（白色或角色互补色），在复杂背景下保持视觉清晰。光影整体遵循右上主光源，左下补光的双光源结构。`,
-  };
+async function fetchPSD(gameplay,idea,kb,aiCfg){
+  const sys=`你是资深手游买量广告的视觉设计总监，精通短视频广告的平面素材制作规范。
+任务：输出整个创意所需的完整PSD平面素材制作规格（覆盖该创意全部图层）。
+要求：图层结构10-15层，从底到顶排列，描述要具体（含色值、尺寸、混合模式等）；style字段：如有知识库图片/视频帧，请从中提炼视觉风格；notes字段：主配色（含色值）、字体方向、图层组织建议。
+只输出JSON对象，直接以{开头}结尾，禁止markdown。
+格式：{"name":"文件名.psd","size":"尺寸","style":"视觉风格","layers":["图层描述"],"notes":"配色/字体/制作要点"}`;
+  const user=`玩法：${gameplay}\n标题：${idea.title}\n钩子：${idea.hook||""}\n概念：${idea.concept}\n标签：${(idea.tags||[]).join("、")}\n情绪：${idea.emotion}\n预期：${idea.effect||""}`;
+  const raw=await callAI(sys,user,kb,aiCfg);const p=robustParse(raw);const item=(p&&!Array.isArray(p)&&p.name)?p:(Array.isArray(p)&&p.length?p[0]:null);
+  if(item)return item;
+  return{name:`${idea.title}_素材合集.psd`,size:"1080x1920",style:`以「${idea.emotion}」为核心情绪，高对比暗色风格`,layers:[`底层背景：深色渐变（#0d0d1a→#1a1a2e）`,`核心主体：${(idea.tags||[]).slice(0,2).join("、")} 居中偏下55-65%`,"玩法UI元素组","操作引导箭头/手势",`片头钩子大字：「${idea.hook||idea.title}」字号100+`,"情绪高潮色调蒙版","粒子/光效装饰层","品牌组：LOGO+图标+评分","CTA按钮：暖橙#f59e0b","全局调色层（置顶）"],notes:`主色：#0d0d1a + #f59e0b。字体：标题超粗无衬线，正文中等粗细。按背景/内容/文案/UI/品牌分组。`};
 }
 
-async function fetchSOP(gameplay, idea, cfg) {
-  const sys = `你是资深手游买量短视频剪辑导演，有丰富的爆款广告制作经验。
-
-任务：根据创意方向，输出一套完整的视频剪辑SOP（标准操作规程），覆盖从片头到结尾的完整30秒流程。
-
-要求：
-- 生成6-7个剪辑步骤，每步时长加总约等于30秒
-- action字段要具体描述：镜头内容、转场方式、文案内容、特效处理
-- emotion字段描述该段的情绪基调和节奏
-- tip字段给出可执行的剪辑技巧，包括素材选取、调色、音效建议
-
-只输出JSON数组，直接以 [ 开头、以 ] 结尾，禁止任何解释和markdown。
-格式：[{"step":1,"duration":"0-3s","title":"步骤名称","action":"具体操作描述（镜头/文案/转场）","emotion":"情绪基调与节奏","tip":"可执行剪辑技巧"}]`;
-
-  const user = `游戏玩法类型：${gameplay}
-创意标题：${idea.title}
-片头钩子文案：${idea.hook || ""}
-核心玩法描述：${idea.concept}
-使用的标签元素：${(idea.tags||[]).join("、")}
-主情绪：${idea.emotion}
-预期用户反应：${idea.effect || ""}
-
-请输出对应这个创意方向的完整30秒剪辑SOP。`;
-
-  const raw = await callAI(sys, user, cfg);
-  const p = robustParse(raw);
-  if (Array.isArray(p) && p.length) return p;
-  if (p?.sop?.length) return p.sop;
-  return [
-    { step:1, duration:"0-3s",   title:"片头钩子", action:`快切方式出现「${idea.hook||idea.title}」大字文案，同步出现游戏核心场景截图，画面比例9:16竖屏`, emotion:"强烈好奇/紧张，节奏快", tip:"前1s不能有黑场，文案需要卡音效节拍出现，推荐使用冲击音效" },
-    { step:2, duration:"3-8s",   title:"问题建立", action:"展示游戏内核心挑战场景，角色或道具处于危险/困境状态，画面停留2-3秒让观众代入", emotion:"挑战欲被激活，期待感", tip:"选取游戏内最能体现「${idea.emotion}」情绪的截图，适当加速播放" },
-    { step:3, duration:"8-16s",  title:"玩法核心展示", action:`展示${idea.concept}的核心操作过程，镜头跟随操作移动，每1.5秒切换一个操作步骤`, emotion:"专注投入，节奏稳定上升", tip:"操作特效需要夸张化处理，可加粒子/光效强化反馈感，配合点击音效" },
-    { step:4, duration:"16-22s", title:"情绪高潮", action:"推进到最关键转折点，制造最强情绪峰值，配合音乐高潮部分，画面色调加深加饱和", emotion:`${idea.emotion}达到峰值，强烈刺激`, tip:"此处是留存关键帧，色调调整饱和度+20%、对比度+15%，BGM音量提升30%" },
-    { step:5, duration:"22-26s", title:"结果揭晓", action:"展示结果画面，成功或失败的结局呈现，文案强化情绪残留，让观众意犹未尽", emotion:"满足感或遗憾感（根据结局类型）", tip:"成功结局加撒花特效，失败结局加震动效果，两种处理都能强化情绪记忆" },
-    { step:6, duration:"26-30s", title:"下载引导", action:"品牌LOGO出现，游戏图标 + 应用商店按钮，简洁文案「免费下载 / 立即游玩」，画面保持干净", emotion:"轻松愉悦，降低门槛感", tip:"CTA按钮需要有呼吸感动效（缩放循环），文案控制在6字以内，背景不宜太复杂" },
-  ];
+async function fetchSOP(gameplay,idea,kb,aiCfg){
+  const sys=`你是资深手游买量短视频剪辑导演。
+任务：输出完整30秒视频剪辑SOP，覆盖片头到结尾。
+要求：6-7个步骤，时长加总≈30s；action：镜头/转场/文案/特效；emotion：情绪基调；tip：可执行剪辑技巧（如有参考视频帧/图片，结合视觉元素给建议）。
+只输出JSON数组，直接以[开头]结尾，禁止markdown。
+格式：[{"step":1,"duration":"0-3s","title":"步骤名","action":"操作描述","emotion":"情绪","tip":"技巧"}]`;
+  const user=`玩法：${gameplay}\n标题：${idea.title}\n钩子：${idea.hook||""}\n概念：${idea.concept}\n标签：${(idea.tags||[]).join("、")}\n情绪：${idea.emotion}`;
+  const raw=await callAI(sys,user,kb,aiCfg);const p=robustParse(raw);
+  if(Array.isArray(p)&&p.length)return p;
+  return[{step:1,duration:"0-3s",title:"片头钩子",action:`快切出现「${idea.hook||idea.title}」大字 + 游戏核心场景`,emotion:"强烈好奇/紧张",tip:"前1s无黑场，文案卡音效节拍"},{step:2,duration:"3-8s",title:"问题建立",action:"角色/道具处于危险困境，停留2-3s让观众代入",emotion:"挑战欲被激活",tip:"选最紧张截图，适当加速"},{step:3,duration:"8-16s",title:"玩法展示",action:`展示${idea.concept}核心操作，每1.5s切换一步`,emotion:"专注投入，节奏上升",tip:"操作特效夸张化，加粒子光效"},{step:4,duration:"16-22s",title:"情绪高潮",action:"最关键转折点，色调加深加饱和，配合BGM高潮",emotion:`${idea.emotion}达到峰值`,tip:"饱和度+20%，对比度+15%，BGM+30%"},{step:5,duration:"22-26s",title:"结果揭晓",action:"成功/失败结局，文案强化情绪残留",emotion:"满足或遗憾",tip:"成功加撒花，失败加震动"},{step:6,duration:"26-30s",title:"下载引导",action:"LOGO+图标+「免费下载/立即游玩」",emotion:"轻松降门槛",tip:"CTA按钮加呼吸动效，文案≤6字"}];
 }
 
-function App() {
-  const [gameplays, setGameplays]       = useState(()=>lsGet(LS_GAMEPLAYS, INITIAL_GAMEPLAYS));
-  const [activeGP, setActiveGP]         = useState("消除");
-  const [editingGP, setEditingGP]       = useState(null);
-  const [newGPInput, setNewGPInput]     = useState("");
-  const gpId = useRef(lsGet(LS_GP_ID, 100));
+// ─── 样式 ─────────────────────────────────────────────────────────────────────
+const STYLES=`
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+::-webkit-scrollbar{width:4px;height:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#2a2a2e;border-radius:3px}
+input::placeholder,textarea::placeholder{color:#4b4b55}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:.8}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.fade-up{animation:fadeUp .25s ease both}.pulse{animation:pulse 1.4s ease-in-out infinite}
+.drop-zone{border:2px dashed #2a2a2e;border-radius:10px;transition:all .2s;cursor:pointer;text-align:center}
+.drop-zone:hover,.drop-zone.over{border-color:#a78bfa88;background:#a78bfa08}
+.tag-row{isolation:isolate;display:inline-flex;align-items:center;position:relative}
+.tag-row:hover .tag-actions{display:flex !important}
+`;
 
-  const [tags, setTags]                 = useState(()=>lsGet(LS_TAGS, INITIAL_TAGS));
-  const [newTagInputs, setNewTagInputs] = useState({});
-  const [editingTag, setEditingTag]     = useState(null);
-  const [editingCat, setEditingCat]     = useState(null);
-  const [newCatInput, setNewCatInput]   = useState("");
-  const tagId = useRef(lsGet(LS_TAG_ID, 300));
-  const importInputRef = useRef(null);
-  const [importMsg, setImportMsg] = useState("");
+let _kbId=1;
 
-  const [showSettings, setShowSettings] = useState(false);
-  const [aiCfg, setAiCfg]               = useState({ providerId:"anthropic", apiKey:"", model:"claude-sonnet-4-20250514", customBaseURL:"", customModel:"" });
+function App(){
+  // ── 基础状态 ──────────────────────────────────────────────────────────────
+  const[gameplays,setGameplays]=useState(()=>lsGet(LS_GAMEPLAYS,INITIAL_GAMEPLAYS));
+  const[activeGP,setActiveGP]=useState("消除");
+  const[editingGP,setEditingGP]=useState(null);
+  const[newGPInput,setNewGPInput]=useState("");
+  const gpId=useRef(lsGet(LS_GP_ID,100));
+  const[tags,setTags]=useState(()=>lsGet(LS_TAGS,INITIAL_TAGS));
+  const[newTagInputs,setNewTagInputs]=useState({});
+  const[editingTag,setEditingTag]=useState(null);
+  const[editingCat,setEditingCat]=useState(null);
+  const[newCatInput,setNewCatInput]=useState("");
+  const tagId=useRef(lsGet(LS_TAG_ID,300));
+  const importInputRef=useRef(null);
+  const[importMsg,setImportMsg]=useState("");
+  const[showSettings,setShowSettings]=useState(false);
+  const[settingsTab,setSettingsTab]=useState("api");
 
-  const [topic, setTopic]               = useState("");
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [ideas, setIdeas]               = useState([]);
-  const [ideasErr, setIdeasErr]         = useState("");
-  const [selectedIdea, setSelectedIdea] = useState(null);
-  const [psdData, setPsdData]           = useState(null);
-  const [sopData, setSopData]           = useState(null);
-  const [loadingPSD, setLoadingPSD]     = useState(false);
-  const [loadingSOP, setLoadingSOP]     = useState(false);
-  const [psdErr, setPsdErr]             = useState("");
-  const [sopErr, setSopErr]             = useState("");
-  const [activeTab, setActiveTab]       = useState("psd");
-  const [sidebarWidth, setSidebarWidth] = useState(246);
-  const isDragging = useRef(false);
-  const dragStartX = useRef(0);
-  const dragStartW = useRef(246);
+  // ── AI 配置 ───────────────────────────────────────────────────────────────
+  const[aiCfg,setAiCfg]=useState(()=>({...DEFAULT_AI_CFG,...lsGet(LS_AI_CFG,{})}));
+  useEffect(()=>{ lsSet(LS_AI_CFG,aiCfg); },[aiCfg]);
 
-  const activeTags = Object.entries(tags).flatMap(([cat,list])=>
-    list.filter(t=>t.active).map(t=>`[${cat}]${t.name}(${t.rating})`)
-  );
+  // ── 知识库 ─────────────────────────────────────────────────────────────────
+  const[kb,setKb]=useState(()=>{
+    const{items,counter}=loadKBFromLS();
+    _kbId=counter;
+    return items;
+  });
+  const[showKB,setShowKB]=useState(false);
+  const[kbTab,setKbTab]=useState("list");
+  const[txtName,setTxtName]=useState("");
+  const[txtContent,setTxtContent]=useState("");
+  const[txtType,setTxtType]=useState("script");
+  const[uploading,setUploading]=useState(false);
+  const[uploadMsg,setUploadMsg]=useState("");
+  const[dragover,setDragover]=useState(false);
+  const[vidPreview,setVidPreview]=useState(null);
+  const[vidFrameCount,setVidFrameCount]=useState(6);
+  const activeKB=kb.filter(i=>!i.disabled);
 
-  // ── 持久化：标签库 & 游戏玩法变更时自动写入 localStorage
-  useEffect(()=>{ lsSet(LS_TAGS, tags); }, [tags]);
-  useEffect(()=>{ lsSet(LS_GAMEPLAYS, gameplays); }, [gameplays]);
+  // ── 持久化 ────────────────────────────────────────────────────────────────
+  useEffect(()=>{lsSet(LS_TAGS,tags);},[tags]);
+  useEffect(()=>{lsSet(LS_GAMEPLAYS,gameplays);},[gameplays]);
 
-  // ── 侧边栏拖拽调宽
-  const onDragStart = useCallback((e) => {
-    isDragging.current = true;
-    dragStartX.current = e.clientX;
-    dragStartW.current = sidebarWidth;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    const onMove = (e) => {
-      if (!isDragging.current) return;
-      const delta = e.clientX - dragStartX.current;
-      const next = Math.min(480, Math.max(160, dragStartW.current + delta));
-      setSidebarWidth(next);
-    };
-    const onUp = () => {
-      isDragging.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [sidebarWidth]);
+  // ── 侧边栏拖拽 ────────────────────────────────────────────────────────────
+  const[sidebarWidth,setSidebarWidth]=useState(215);
+  const isDrag=useRef(false);const dragX=useRef(0);const dragW=useRef(215);
+  const onDragStart=useCallback(e=>{isDrag.current=true;dragX.current=e.clientX;dragW.current=sidebarWidth;document.body.style.cursor="col-resize";document.body.style.userSelect="none";const mv=e=>{if(!isDrag.current)return;setSidebarWidth(Math.min(380,Math.max(140,dragW.current+e.clientX-dragX.current)));};const up=()=>{isDrag.current=false;document.body.style.cursor="";document.body.style.userSelect="";window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);};window.addEventListener("mousemove",mv);window.addEventListener("mouseup",up);},[sidebarWidth]);
 
-  // 游戏玩法操作
-  const addGP = () => {
-    const n=newGPInput.trim();
-    if(!n) return;
-    const id = "g"+(gpId.current++);
-    lsSet(LS_GP_ID, gpId.current);
-    setGameplays(p=>[...p,{id, label:n}]);
-    setNewGPInput("");
+  // ── 玩法 ──────────────────────────────────────────────────────────────────
+  const addGP=()=>{const n=newGPInput.trim();if(!n)return;const id="g"+(gpId.current++);lsSet(LS_GP_ID,gpId.current);setGameplays(p=>[...p,{id,label:n}]);setNewGPInput("");};
+  const deleteGP=id=>setGameplays(p=>{const nx=p.filter(g=>g.id!==id);if(nx.length&&!nx.find(g=>g.label===activeGP))setActiveGP(nx[0].label);return nx;});
+  const renameGP=(id,draft)=>{const n=draft.trim();if(!n){setEditingGP(null);return;}setGameplays(p=>p.map(g=>{if(g.id===id){if(g.label===activeGP)setActiveGP(n);return{...g,label:n};}return g;}));setEditingGP(null);};
+  // ── 标签 ──────────────────────────────────────────────────────────────────
+  const toggleTag=(cat,id)=>setTags(p=>({...p,[cat]:p[cat].map(t=>t.id===id?{...t,active:!t.active}:t)}));
+  const deleteTag=(cat,id)=>setTags(p=>({...p,[cat]:p[cat].filter(t=>t.id!==id)}));
+  const addTag=cat=>{const v=(newTagInputs[cat]||"").trim();if(!v)return;const id=tagId.current++;lsSet(LS_TAG_ID,tagId.current);setTags(p=>({...p,[cat]:[...p[cat],{id,name:v,rating:"B",active:true}]}));setNewTagInputs(p=>({...p,[cat]:""}));};
+  const updateTR=(cat,id,r)=>{setTags(p=>({...p,[cat]:p[cat].map(t=>t.id===id?{...t,rating:r}:t)}));setEditingTag(null);};
+  const updateTN=(cat,id,n)=>{if(n.trim())setTags(p=>({...p,[cat]:p[cat].map(t=>t.id===id?{...t,name:n.trim()}:t)}));setEditingTag(null);};
+  const renameCat=(old,nw)=>{const n=nw.trim();if(!n||n===old){setEditingCat(null);return;}setTags(p=>{const e=Object.entries(p),i=e.findIndex(([k])=>k===old);if(i===-1)return p;e[i]=[n,e[i][1]];return Object.fromEntries(e);});setEditingCat(null);};
+  const deleteCat=cat=>setTags(p=>{const n={...p};delete n[cat];return n;});
+  const addCat=()=>{const n=newCatInput.trim();if(!n||tags[n])return;setTags(p=>({...p,[n]:[]}));setNewCatInput("");};
+
+  // ── 知识库 ────────────────────────────────────────────────────────────────
+  const deleteKB=id=>{deleteKBItem(id);setKb(p=>{const next=p.filter(i=>i.id!==id);saveKBOrder(next);return next;});};
+  const toggleKB=id=>{setKb(p=>{const next=p.map(i=>i.id===id?{...i,disabled:!i.disabled}:i);saveKBOrder(next);return next;});};
+
+  const addTextKB=()=>{
+    const name=txtName.trim(),content=txtContent.trim();
+    if(!name||!content)return;
+    const id=_kbId++;lsSet(LS_KB_CTR,_kbId);
+    const item={id,type:txtType,name,content,size:`${content.length}字`};
+    const ok=saveKBItem(item);
+    if(!ok){setUploadMsg("⚠ 存储空间不足，文字已加入本次会话但无法持久化");setTimeout(()=>setUploadMsg(""),4000);}
+    setKb(p=>{const next=[...p,item];saveKBOrder(next);return next;});
+    setTxtName("");setTxtContent("");setKbTab("list");
   };
-  const deleteGP = (id) => setGameplays(p=>{ const next=p.filter(g=>g.id!==id); if(next.length && !next.find(g=>g.label===activeGP)) setActiveGP(next[0].label); return next; });
-  const renameGP = (id, draft) => {
-    const n=draft.trim(); if(!n){setEditingGP(null);return;}
-    setGameplays(p=>p.map(g=>{ if(g.id===id){if(g.label===activeGP)setActiveGP(n); return{...g,label:n};} return g;}));
-    setEditingGP(null);
+
+  const handleImages=async files=>{
+    setUploading(true);setUploadMsg("");let added=0;
+    for(const f of Array.from(files)){
+      if(!f.type.startsWith("image/"))continue;
+      if(f.size>4*1024*1024){setUploadMsg(`「${f.name}」超4MB，已跳过`);continue;}
+      try{
+        const data=await fileToBase64(f);
+        const id=_kbId++;lsSet(LS_KB_CTR,_kbId);
+        const item={id,type:"image",name:f.name,data,mediaType:f.type,preview:`data:${f.type};base64,${data}`,size:`${(f.size/1024).toFixed(0)}KB`};
+        const ok=saveKBItem(item);
+        if(!ok)setUploadMsg("⚠ 存储空间不足，图片已加入本次会话但无法持久化");
+        setKb(p=>{const next=[...p,item];saveKBOrder(next);return next;});
+        added++;
+      }catch(e){setUploadMsg(`读取「${f.name}」失败`);}
+    }
+    setUploading(false);if(added)setKbTab("list");
   };
 
-  // 标签操作
-  const toggleTag   = (cat,id) => setTags(p=>({...p,[cat]:p[cat].map(t=>t.id===id?{...t,active:!t.active}:t)}));
-  const deleteTag   = (cat,id) => setTags(p=>({...p,[cat]:p[cat].filter(t=>t.id!==id)}));
-  const addTag = (cat) => {
-    const v=(newTagInputs[cat]||"").trim();
-    if(!v) return;
-    const id = tagId.current++;
-    lsSet(LS_TAG_ID, tagId.current);
-    setTags(p=>({...p,[cat]:[...p[cat],{id, name:v, rating:"B", active:true}]}));
-    setNewTagInputs(p=>({...p,[cat]:""}));
+  const loadVideoPreview=async file=>{
+    setUploading(true);setUploadMsg("正在解析视频，抽取关键帧...");setVidPreview(null);
+    try{const frames=await extractVideoFrames(file,vidFrameCount);setVidPreview({name:file.name,frames,file});setUploadMsg("");}
+    catch(e){setUploadMsg(`❌ ${e.message}`);}
+    setUploading(false);
   };
-  const updateTR    = (cat,id,r)  => { setTags(p=>({...p,[cat]:p[cat].map(t=>t.id===id?{...t,rating:r}:t)})); setEditingTag(null); };
-  const updateTN    = (cat,id,n)  => { if(n.trim()) setTags(p=>({...p,[cat]:p[cat].map(t=>t.id===id?{...t,name:n.trim()}:t)})); setEditingTag(null); };
-  const renameCat   = (old,nw)    => { const n=nw.trim(); if(!n||n===old){setEditingCat(null);return;} setTags(p=>{const e=Object.entries(p),i=e.findIndex(([k])=>k===old); if(i===-1)return p; e[i]=[n,e[i][1]]; return Object.fromEntries(e);}); setEditingCat(null); };
-  const deleteCat   = (cat)       => setTags(p=>{const n={...p};delete n[cat];return n;});
-  const addCat      = ()          => { const n=newCatInput.trim(); if(!n||tags[n])return; setTags(p=>({...p,[n]:[]})); setNewCatInput(""); };
+  const reExtractFrames=async()=>{if(vidPreview?.file)await loadVideoPreview(vidPreview.file);};
+  const confirmVideo=()=>{
+    if(!vidPreview)return;
+    const{name,frames}=vidPreview;
+    const id=_kbId++;lsSet(LS_KB_CTR,_kbId);
+    const item={id,type:"video",name,frames,size:`${frames.length}帧`,preview:frames[0]?.preview};
+    const ok=saveKBItem(item);
+    if(!ok)setUploadMsg("⚠ 存储空间不足，视频帧已加入本次会话但无法持久化");
+    setKb(p=>{const next=[...p,item];saveKBOrder(next);return next;});
+    setVidPreview(null);setKbTab("list");
+  };
 
-  // 生成创意
-  const generateIdeas = useCallback(async () => {
+  const onDrop=async e=>{
+    e.preventDefault();setDragover(false);
+    const files=Array.from(e.dataTransfer.files);
+    const vids=files.filter(f=>f.type.startsWith("video/"));
+    const imgs=files.filter(f=>f.type.startsWith("image/"));
+    const txts=files.filter(f=>f.type.startsWith("text/")||f.name.match(/\.(txt|md)$/i));
+    if(vids.length){setKbTab("video");await loadVideoPreview(vids[0]);}
+    else if(imgs.length){setKbTab("image");await handleImages(imgs);}
+    else if(txts.length){const t=await fileToText(txts[0]).catch(()=>"");setTxtName(txts[0].name.replace(/\.[^.]+$/,""));setTxtContent(t.slice(0,8000));setKbTab("text");}
+  };
+
+  // ── 主功能 ────────────────────────────────────────────────────────────────
+  const[topic,setTopic]=useState("");
+  const[loadingIdeas,setLoadingIdeas]=useState(false);
+  const[ideas,setIdeas]=useState([]);
+  const[ideasErr,setIdeasErr]=useState("");
+  const[selectedIdea,setSelectedIdea]=useState(null);
+  const[psdData,setPsdData]=useState(null);
+  const[sopData,setSopData]=useState(null);
+  const[loadingPSD,setLoadingPSD]=useState(false);
+  const[loadingSOP,setLoadingSOP]=useState(false);
+  const[psdErr,setPsdErr]=useState("");
+  const[sopErr,setSopErr]=useState("");
+  const[activeTab,setActiveTab]=useState("psd");
+  const activeTags=Object.entries(tags).flatMap(([cat,list])=>list.filter(t=>t.active).map(t=>`[${cat}]${t.name}(${t.rating})`));
+
+  const generateIdeas=useCallback(async()=>{
     if(!topic.trim()){setIdeasErr("请输入内容方向");return;}
-    setLoadingIdeas(true); setIdeas([]); setSelectedIdea(null); setPsdData(null); setSopData(null); setIdeasErr(""); setPsdErr(""); setSopErr("");
-    const sys = `你是资深休闲手游买量素材策划师，擅长为不同玩法设计爆款视频素材创意。
-
-任务：根据用户给出的游戏玩法、内容方向、标签库，生成【恰好5个】差异化的素材创意方向。每个创意必须有独特切入角度，不能雷同。
-
-输出规则：
-- 必须输出恰好5个创意对象，不能少于5个
-- 只输出JSON数组，直接以 [ 开头、以 ] 结尾
-- 禁止任何解释文字、markdown代码块、前后缀
-- 优先使用S级标签，其次A级标签
-
-JSON格式（严格遵守）：
-[
-  {
-    "title": "创意标题（6-10字，有吸引力）",
-    "hook": "片头钩子文案（10-20字，制造悬念或冲突）",
-    "concept": "核心玩法描述（40-80字，说清楚视频如何呈现、用了哪些标签元素、情绪节奏如何推进）",
-    "tags": ["用到的标签1", "标签2", "标签3"],
-    "effect": "预期用户反应（20-30字）",
-    "emotion": "主情绪词（2-4字）"
-  }
-]`;
-    const user = `游戏玩法：${activeGP}\n内容方向：${topic}\n\n可用标签库（格式：[分类]标签名(等级)，S级最优先）：\n${activeTags.join("\n")}\n\n请生成恰好5个差异化创意，每个切入角度不同。`;
-    try {
-      const raw = await callAI(sys, user, aiCfg);
-      const parsed = robustParse(raw);
-      const list = Array.isArray(parsed) ? parsed : parsed?.ideas;
-      if (list?.length) {
-        setIdeas(list);
-      } else {
-        const preview = raw ? raw.slice(0,100).replace(/\n/g," ") : "（空响应）";
-        setIdeasErr(`解析失败，模型返回：「${preview}...」`);
-      }
-    } catch(e){ setIdeasErr(e.message); }
+    setLoadingIdeas(true);setIdeas([]);setSelectedIdea(null);setPsdData(null);setSopData(null);setIdeasErr("");setPsdErr("");setSopErr("");
+    const sys=`你是资深休闲手游买量素材策划师。生成【恰好5个】差异化素材创意，切入角度各不相同。只输出JSON数组，[ 开头 ] 结尾，禁止markdown。优先S级标签，其次A级。如有知识库参考，充分学习后让创意对齐参考内容。
+格式：[{"title":"标题6-10字","hook":"钩子10-20字","concept":"核心描述40-80字","tags":["标签1","标签2"],"effect":"预期反应20-30字","emotion":"情绪词2-4字"}]`;
+    const user=`玩法：${activeGP}\n方向：${topic}\n\n标签库（S>A>B>C）：\n${activeTags.join("\n")}`;
+    try{const raw=await callAI(sys,user,activeKB,aiCfg);const parsed=robustParse(raw);const list=Array.isArray(parsed)?parsed:parsed?.ideas;if(list?.length)setIdeas(list);else setIdeasErr(`解析失败：${(raw||"").slice(0,80)}`);}
+    catch(e){setIdeasErr(e.message);}
     setLoadingIdeas(false);
-  },[topic,activeTags,activeGP,aiCfg]);
+  },[topic,activeTags,activeGP,activeKB,aiCfg]);
 
-  const selectIdea = useCallback((idea) => {
-    setSelectedIdea(idea); setPsdData(null); setSopData(null); setPsdErr(""); setSopErr(""); setLoadingPSD(true); setLoadingSOP(true); setActiveTab("psd");
-    fetchPSD(activeGP,idea,aiCfg).then(d=>{setPsdData(d);setLoadingPSD(false);}).catch(e=>{setPsdErr(e.message);setLoadingPSD(false);});
-    fetchSOP(activeGP,idea,aiCfg).then(d=>{setSopData(d);setLoadingSOP(false);}).catch(e=>{setSopErr(e.message);setLoadingSOP(false);});
-  },[activeGP,aiCfg]);
+  const selectIdea=useCallback(idea=>{
+    setSelectedIdea(idea);setPsdData(null);setSopData(null);setPsdErr("");setSopErr("");setLoadingPSD(true);setLoadingSOP(true);setActiveTab("psd");
+    fetchPSD(activeGP,idea,activeKB,aiCfg).then(d=>{setPsdData(d);setLoadingPSD(false);}).catch(e=>{setPsdErr(e.message);setLoadingPSD(false);});
+    fetchSOP(activeGP,idea,activeKB,aiCfg).then(d=>{setSopData(d);setLoadingSOP(false);}).catch(e=>{setSopErr(e.message);setLoadingSOP(false);});
+  },[activeGP,activeKB,aiCfg]);
 
-  const retryPSD = () => { if(!selectedIdea)return; setPsdData(null);setPsdErr("");setLoadingPSD(true); fetchPSD(activeGP,selectedIdea,aiCfg).then(d=>{setPsdData(d);setLoadingPSD(false);}).catch(e=>{setPsdErr(e.message);setLoadingPSD(false);}); };
-  const retrySOP = () => { if(!selectedIdea)return; setSopData(null);setSopErr("");setLoadingSOP(true); fetchSOP(activeGP,selectedIdea,aiCfg).then(d=>{setSopData(d);setLoadingSOP(false);}).catch(e=>{setSopErr(e.message);setLoadingSOP(false);}); };
+  const retryPSD=()=>{if(!selectedIdea)return;setPsdData(null);setPsdErr("");setLoadingPSD(true);fetchPSD(activeGP,selectedIdea,activeKB,aiCfg).then(d=>{setPsdData(d);setLoadingPSD(false);}).catch(e=>{setPsdErr(e.message);setLoadingPSD(false);});};
+  const retrySOP=()=>{if(!selectedIdea)return;setSopData(null);setSopErr("");setLoadingSOP(true);fetchSOP(activeGP,selectedIdea,activeKB,aiCfg).then(d=>{setSopData(d);setLoadingSOP(false);}).catch(e=>{setSopErr(e.message);setLoadingSOP(false);});};
 
-  return (
-    <div style={{height:"100vh",display:"flex",flexDirection:"column",background:"#0f0f11",color:"#e2e0db",overflow:"hidden",position:"relative"}}>
+  const typeIcon={text:"📄",script:"📝",image:"🖼️",video:"🎬"};
+  const typeColor={text:"#60a5fa",script:"#a78bfa",image:"#34d399",video:"#fb923c"};
+  const typeLabel={text:"文字",script:"脚本",image:"图片",video:"视频"};
+  const prov=PROVIDERS[aiCfg.providerId]||PROVIDERS.anthropic;
+  const apiReady=!!aiCfg.apiKey;
 
-      {/* HEADER */}
-      <div style={{padding:"11px 18px",borderBottom:"1px solid #1e1e22",display:"flex",alignItems:"center",gap:10,background:"#0a0a0c",flexShrink:0}}>
-        <div style={{width:28,height:28,background:"linear-gradient(135deg,#f59e0b,#ef4444)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:14}}>✦</div>
-        <div>
-          <div style={{fontSize:14,fontWeight:600,color:"#fff"}}>素材发散工具</div>
-          <div style={{fontSize:10,color:"#6b6b75"}}>AI 驱动的视频创意引擎</div>
-        </div>
-        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:11,padding:"3px 9px",borderRadius:5,background:"#f59e0b18",color:"#f59e0b",border:"1px solid #f59e0b33",fontWeight:500}}>{activeGP} 玩法</span>
-          <span style={{fontSize:11,color:"#6b6b75"}}>激活 <b style={{color:"#f59e0b"}}>{activeTags.length}</b> 标签</span>
-          <button onClick={()=>setShowSettings(true)} style={{display:"flex",alignItems:"center",gap:5,padding:"5px 11px",borderRadius:6,border:`1px solid ${aiCfg.apiKey?"#10b98133":"#7f1d1d"}`,background:aiCfg.apiKey?"#10b98111":"#2a1212",color:aiCfg.apiKey?"#10b981":"#f87171",fontSize:11,cursor:"pointer",fontWeight:500}}>
-            ⚙ {aiCfg.apiKey?(PROVIDERS[aiCfg.providerId]?.label?.split(" ")[0]||"已配置"):"未配置 API"}
+  return(
+    <div style={{height:"100vh",display:"flex",flexDirection:"column",background:"#0f0f11",color:"#e2e0db",overflow:"hidden",fontFamily:"'PingFang SC','Microsoft YaHei',sans-serif"}}>
+      <style>{STYLES}</style>
+
+      {/* ══ HEADER ══ */}
+      <div style={{padding:"9px 14px",borderBottom:"1px solid #1e1e22",display:"flex",alignItems:"center",gap:9,background:"#0a0a0c",flexShrink:0}}>
+        <div style={{width:24,height:24,background:"linear-gradient(135deg,#f59e0b,#ef4444)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:12}}>✦</div>
+        <div><div style={{fontSize:12,fontWeight:600,color:"#fff"}}>素材发散工具</div><div style={{fontSize:9,color:"#6b6b75"}}>AI 驱动的视频创意引擎</div></div>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          <span style={{fontSize:9,padding:"2px 7px",borderRadius:4,background:"#f59e0b18",color:"#f59e0b",border:"1px solid #f59e0b33"}}>{activeGP}</span>
+          <span style={{fontSize:9,color:"#6b6b75"}}><b style={{color:"#f59e0b"}}>{activeTags.length}</b> 标签</span>
+          <button onClick={()=>setShowKB(true)} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 9px",borderRadius:5,border:`1px solid ${activeKB.length?"#a78bfa55":"#2a2a2e"}`,background:activeKB.length?"#a78bfa11":"#1a1a1e",color:activeKB.length?"#c4b5fd":"#6b6b75",fontSize:9,cursor:"pointer"}}>
+            📚 知识库{activeKB.length>0&&<span style={{background:"#a78bfa",color:"#fff",borderRadius:"50%",width:14,height:14,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,flexShrink:0}}>{activeKB.length}</span>}
+          </button>
+          <button onClick={()=>{setSettingsTab("api");setShowSettings(true);}} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:5,border:`1px solid ${apiReady?"#10b98133":"#7f1d1d"}`,background:apiReady?"#10b98111":"#2a1212",color:apiReady?"#10b981":"#f87171",fontSize:9,cursor:"pointer",fontWeight:500}}>
+            {apiReady?"✓":"⚠"} {apiReady?prov.label.split(" ")[0]:"未配置 Key"} <span style={{color:"#4b4b55",fontSize:8}}>| ⚙</span>
           </button>
         </div>
       </div>
 
-      {/* BODY */}
+      {/* ══ BODY ══ */}
       <div style={{display:"flex",flex:1,overflow:"hidden",minHeight:0}}>
 
-        {/* LEFT SIDEBAR */}
-        <div style={{width:sidebarWidth,borderRight:"none",padding:"12px 10px",overflowY:"auto",background:"#0a0a0c",flexShrink:0}}>
-
-          {/* 游戏玩法 */}
-          <div style={{marginBottom:14}}>
-            <div style={{fontSize:10,color:"#6b6b75",letterSpacing:"0.08em",marginBottom:8}}>游戏玩法</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
-              {gameplays.map(g=>(
-                editingGP?.id===g.id
-                  ? <div key={g.id} style={{display:"flex",alignItems:"center",gap:3,width:"100%",marginBottom:2}}>
-                      <input value={editingGP.draft} onChange={e=>setEditingGP(p=>({...p,draft:e.target.value}))}
-                        onBlur={()=>renameGP(g.id,editingGP.draft)}
-                        onKeyDown={e=>{if(e.key==="Enter")renameGP(g.id,editingGP.draft);if(e.key==="Escape")setEditingGP(null);}}
-                        autoFocus style={{flex:1,background:"#1a1a1e",border:"1px solid #f59e0b55",borderRadius:5,padding:"4px 7px",color:"#e2e0db",fontSize:11,outline:"none"}}/>
-                      <button onClick={()=>renameGP(g.id,editingGP.draft)} style={{background:"#14532d",border:"none",color:"#6ee7b7",borderRadius:4,fontSize:10,padding:"3px 7px",cursor:"pointer"}}>✓</button>
-                      <button onClick={()=>setEditingGP(null)} style={{background:"none",border:"none",color:"#4b4b55",fontSize:10,cursor:"pointer"}}>✕</button>
-                    </div>
-                  : <div key={g.id} style={{display:"flex",alignItems:"center",gap:2}}>
-                      <button onClick={()=>setActiveGP(g.label)} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${activeGP===g.label?"#f59e0b":"#2a2a2e"}`,background:activeGP===g.label?"#f59e0b18":"#1a1a1e",color:activeGP===g.label?"#f59e0b":"#6b6b75",fontSize:11,cursor:"pointer",fontWeight:activeGP===g.label?600:400}}>
-                        {g.label}
-                      </button>
-                      <button onClick={()=>setEditingGP({id:g.id,draft:g.label})} style={{background:"none",border:"none",color:"#4b4b55",cursor:"pointer",padding:"0 2px",fontSize:9}}>✎</button>
-                      <button onClick={()=>deleteGP(g.id)} style={{background:"none",border:"none",color:"#4b4b55",cursor:"pointer",padding:"0 2px",fontSize:9}}>✕</button>
-                    </div>
-              ))}
+        {/* 侧边栏 */}
+        <div style={{width:sidebarWidth,padding:"9px 7px",overflowY:"auto",background:"#0a0a0c",flexShrink:0}}>
+          <div style={{marginBottom:10}}>
+            <div style={{fontSize:8,color:"#6b6b75",letterSpacing:".08em",marginBottom:6}}>游戏玩法</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+              {gameplays.map(g=>editingGP?.id===g.id
+                ?<div key={g.id} style={{display:"flex",gap:2,width:"100%",marginBottom:2}}>
+                  <input value={editingGP.draft} onChange={e=>setEditingGP(p=>({...p,draft:e.target.value}))} onBlur={()=>renameGP(g.id,editingGP.draft)} onKeyDown={e=>{if(e.key==="Enter")renameGP(g.id,editingGP.draft);if(e.key==="Escape")setEditingGP(null);}} autoFocus style={{flex:1,background:"#1a1a1e",border:"1px solid #f59e0b55",borderRadius:3,padding:"2px 5px",color:"#e2e0db",fontSize:9,outline:"none"}}/>
+                  <button onClick={()=>renameGP(g.id,editingGP.draft)} style={{background:"#14532d",border:"none",color:"#6ee7b7",borderRadius:2,fontSize:8,padding:"1px 5px",cursor:"pointer"}}>✓</button>
+                  <button onClick={()=>setEditingGP(null)} style={{background:"none",border:"none",color:"#555",fontSize:8,cursor:"pointer"}}>✕</button>
+                </div>
+                :<div key={g.id} style={{display:"flex",alignItems:"center",gap:1}}>
+                  <button onClick={()=>setActiveGP(g.label)} style={{padding:"3px 8px",borderRadius:5,border:`1px solid ${activeGP===g.label?"#f59e0b":"#2a2a2e"}`,background:activeGP===g.label?"#f59e0b18":"#1a1a1e",color:activeGP===g.label?"#f59e0b":"#6b6b75",fontSize:10,cursor:"pointer",fontWeight:activeGP===g.label?600:400}}>{g.label}</button>
+                  <button onClick={()=>setEditingGP({id:g.id,draft:g.label})} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:7}}>✎</button>
+                  <button onClick={()=>deleteGP(g.id)} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:7}}>✕</button>
+                </div>
+              )}
             </div>
-            <div style={{display:"flex",gap:4,marginTop:7}}>
-              <input value={newGPInput} onChange={e=>setNewGPInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addGP()} placeholder="+ 新增玩法"
-                style={{flex:1,background:"transparent",border:"1px solid #1e1e22",borderRadius:5,padding:"4px 7px",color:"#9ca3af",fontSize:10,outline:"none"}}/>
-              <button onClick={addGP} style={{background:"#1e1e22",border:"1px solid #2a2a2e",color:"#9ca3af",borderRadius:5,padding:"4px 9px",fontSize:10,cursor:"pointer"}}>+</button>
+            <div style={{display:"flex",gap:2,marginTop:5}}>
+              <input value={newGPInput} onChange={e=>setNewGPInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addGP()} placeholder="+ 新增玩法" style={{flex:1,background:"transparent",border:"1px solid #1e1e22",borderRadius:3,padding:"2px 5px",color:"#9ca3af",fontSize:8,outline:"none"}}/>
+              <button onClick={addGP} style={{background:"#1e1e22",border:"1px solid #2a2a2e",color:"#9ca3af",borderRadius:3,padding:"2px 6px",fontSize:8,cursor:"pointer"}}>+</button>
             </div>
           </div>
 
-          <div style={{height:1,background:"#1e1e22",margin:"4px 0 12px"}}/>
-
-          {/* 标签库 */}
-          <div style={{fontSize:10,color:"#6b6b75",letterSpacing:"0.08em",marginBottom:8}}>标签库 / TAG BANK</div>
-          <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:10}}>
-            {Object.entries(RL).map(([r,l])=>(
-              <span key={r} style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:RC[r].bg+"44",color:RC[r].text,border:`1px solid ${RC[r].border}44`}}>{r}·{l}</span>
-            ))}
+          <div style={{height:1,background:"#1e1e22",margin:"3px 0 9px"}}/>
+          <div style={{fontSize:8,color:"#6b6b75",letterSpacing:".08em",marginBottom:6}}>标签库 / TAG BANK</div>
+          <div style={{display:"flex",gap:2,flexWrap:"wrap",marginBottom:7}}>
+            {Object.entries(RL).map(([r,l])=><span key={r} style={{fontSize:7,padding:"1px 3px",borderRadius:2,background:RC[r].bg+"44",color:RC[r].text,border:`1px solid ${RC[r].border}44`}}>{r}·{l}</span>)}
           </div>
 
           {Object.entries(tags).map(([cat,tagList])=>(
-            <div key={cat} style={{marginBottom:13}}>
+            <div key={cat} style={{marginBottom:10}}>
               {editingCat?.oldName===cat
-                ? <div style={{display:"flex",alignItems:"center",gap:3,marginBottom:5}}>
-                    <input value={editingCat.draftName} onChange={e=>setEditingCat(p=>({...p,draftName:e.target.value}))}
-                      onBlur={()=>renameCat(cat,editingCat.draftName)}
-                      onKeyDown={e=>{if(e.key==="Enter")renameCat(cat,editingCat.draftName);if(e.key==="Escape")setEditingCat(null);}}
-                      autoFocus style={{flex:1,background:"#1a1a1e",border:"1px solid #f59e0b55",borderRadius:4,padding:"2px 6px",color:"#e2e0db",fontSize:10,outline:"none"}}/>
-                    <button onClick={()=>renameCat(cat,editingCat.draftName)} style={{background:"#14532d",border:"none",color:"#6ee7b7",borderRadius:3,fontSize:9,padding:"2px 6px",cursor:"pointer"}}>✓</button>
-                    <button onClick={()=>setEditingCat(null)} style={{background:"none",border:"none",color:"#4b4b55",fontSize:9,cursor:"pointer"}}>✕</button>
+                ?<div style={{display:"flex",gap:2,marginBottom:3}}>
+                  <input value={editingCat.draftName} onChange={e=>setEditingCat(p=>({...p,draftName:e.target.value}))} onBlur={()=>renameCat(cat,editingCat.draftName)} onKeyDown={e=>{if(e.key==="Enter")renameCat(cat,editingCat.draftName);if(e.key==="Escape")setEditingCat(null);}} autoFocus style={{flex:1,background:"#1a1a1e",border:"1px solid #f59e0b55",borderRadius:3,padding:"1px 4px",color:"#e2e0db",fontSize:8,outline:"none"}}/>
+                  <button onClick={()=>renameCat(cat,editingCat.draftName)} style={{background:"#14532d",border:"none",color:"#6ee7b7",borderRadius:2,fontSize:7,padding:"1px 4px",cursor:"pointer"}}>✓</button>
+                  <button onClick={()=>setEditingCat(null)} style={{background:"none",border:"none",color:"#555",fontSize:7,cursor:"pointer"}}>✕</button>
+                </div>
+                :<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
+                  <span style={{fontSize:8,color:"#9ca3af",fontWeight:500}}>{cat}</span>
+                  <div style={{display:"flex",gap:1}}>
+                    <button onClick={()=>setEditingCat({oldName:cat,draftName:cat})} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:7}}>✎</button>
+                    <button onClick={()=>deleteCat(cat)} style={{background:"none",border:"none",color:"#333",cursor:"pointer",fontSize:7}}>✕</button>
                   </div>
-                : <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                    <span style={{fontSize:10,color:"#9ca3af",fontWeight:500}}>{cat}</span>
-                    <div style={{display:"flex",gap:2}}>
-                      <button onClick={()=>setEditingCat({oldName:cat,draftName:cat})} style={{background:"none",border:"none",color:"#4b4b55",cursor:"pointer",padding:"0 2px",fontSize:9}}>✎</button>
-                      <button onClick={()=>deleteCat(cat)} style={{background:"none",border:"none",color:"#4b4b55",cursor:"pointer",padding:"0 2px",fontSize:9}}>✕</button>
+                </div>
+              }
+              <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
+                {tagList.map(tag=>editingTag?.id===tag.id&&editingTag?.cat===cat
+                  ?<div key={tag.id} style={{background:"#1a1a1e",border:"1px solid #333",borderRadius:4,padding:4,width:"100%",marginBottom:2}}>
+                    <input defaultValue={tag.name} onBlur={e=>updateTN(cat,tag.id,e.target.value)} autoFocus style={{background:"transparent",border:"none",color:"#e2e0db",fontSize:9,width:"100%",outline:"none",marginBottom:3}}/>
+                    <div style={{display:"flex",gap:1}}>{["S","A","B","C"].map(r=><button key={r} onMouseDown={e=>e.preventDefault()} onClick={()=>updateTR(cat,tag.id,r)} style={{flex:1,background:tag.rating===r?RC[r].bg:"transparent",color:tag.rating===r?RC[r].text:"#6b6b75",border:`1px solid ${tag.rating===r?RC[r].border:"#333"}`,borderRadius:2,fontSize:8,padding:"2px 0",cursor:"pointer"}}>{r}</button>)}</div>
+                  </div>
+                  :<div key={tag.id} className="tag-row">
+                    <button onClick={()=>toggleTag(cat,tag.id)} style={{display:"flex",alignItems:"center",gap:3,padding:"3px 7px",borderRadius:4,border:`1px solid ${tag.active?RC[tag.rating].border:"#2a2a2e"}`,background:tag.active?RC[tag.rating].bg+"55":"#1a1a1e",color:tag.active?RC[tag.rating].text:"#4b4b55",fontSize:10,cursor:"pointer",userSelect:"none",whiteSpace:"nowrap"}}>
+                      <span style={{fontSize:7,fontWeight:700,opacity:tag.active?1:.4,flexShrink:0}}>{tag.rating}</span>{tag.name}
+                    </button>
+                    <div className="tag-actions" style={{display:"none",position:"absolute",right:0,top:"50%",transform:"translateY(-50%) translateX(100%)",flexDirection:"row",gap:1,paddingLeft:2,zIndex:10}}>
+                      <button onClick={e=>{e.stopPropagation();setEditingTag({id:tag.id,cat});}} style={{width:16,height:16,borderRadius:3,background:"#2a2a38",border:"1px solid #3a3a50",color:"#9ca3af",cursor:"pointer",fontSize:8,display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>✎</button>
+                      <button onClick={e=>{e.stopPropagation();deleteTag(cat,tag.id);}} style={{width:16,height:16,borderRadius:3,background:"#2a1414",border:"1px solid #4a2020",color:"#f87171",cursor:"pointer",fontSize:8,display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>✕</button>
                     </div>
                   </div>
-              }
-              <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                {tagList.map(tag=>(
-                  editingTag?.id===tag.id && editingTag?.cat===cat
-                    ? <div key={tag.id} style={{background:"#1a1a1e",border:"1px solid #333",borderRadius:6,padding:5,width:"100%",marginBottom:2}}>
-                        <input defaultValue={tag.name} onBlur={e=>updateTN(cat,tag.id,e.target.value)} autoFocus
-                          style={{background:"transparent",border:"none",color:"#e2e0db",fontSize:11,width:"100%",outline:"none",marginBottom:4}}/>
-                        <div style={{display:"flex",gap:2}}>
-                          {["S","A","B","C"].map(r=>(
-                            <button key={r} onMouseDown={e=>e.preventDefault()} onClick={()=>updateTR(cat,tag.id,r)}
-                              style={{flex:1,background:tag.rating===r?RC[r].bg:"transparent",color:tag.rating===r?RC[r].text:"#6b6b75",border:`1px solid ${tag.rating===r?RC[r].border:"#333"}`,borderRadius:3,fontSize:9,padding:"2px 0",cursor:"pointer"}}>{r}</button>
-                          ))}
-                        </div>
-                      </div>
-                    : <div key={tag.id} style={{display:"flex",alignItems:"center",gap:2}}>
-                        <button onClick={()=>toggleTag(cat,tag.id)}
-                          style={{display:"flex",alignItems:"center",gap:3,padding:"3px 7px",borderRadius:5,border:`1px solid ${tag.active?RC[tag.rating].border:"#2a2a2e"}`,background:tag.active?RC[tag.rating].bg+"44":"#1a1a1e",color:tag.active?RC[tag.rating].text:"#4b4b55",fontSize:11,cursor:"pointer"}}>
-                          <span style={{fontSize:8,fontWeight:700,opacity:tag.active?1:.4}}>{tag.rating}</span>
-                          <span>{tag.name}</span>
-                        </button>
-                        <button onClick={()=>setEditingTag({id:tag.id,cat})} style={{background:"none",border:"none",color:"#4b4b55",cursor:"pointer",padding:"0 2px",fontSize:9}}>✎</button>
-                        <button onClick={()=>deleteTag(cat,tag.id)} style={{background:"none",border:"none",color:"#4b4b55",cursor:"pointer",padding:"0 2px",fontSize:9}}>✕</button>
-                      </div>
-                ))}
-                <div style={{display:"flex",gap:3,width:"100%",marginTop:2}}>
-                  <input value={newTagInputs[cat]||""} onChange={e=>setNewTagInputs(p=>({...p,[cat]:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&addTag(cat)}
-                    placeholder="+ 新标签" style={{flex:1,background:"transparent",border:"1px solid #1e1e22",borderRadius:4,padding:"3px 6px",color:"#9ca3af",fontSize:10,outline:"none"}}/>
-                  <button onClick={()=>addTag(cat)} style={{background:"#1e1e22",border:"none",color:"#9ca3af",borderRadius:4,padding:"3px 7px",fontSize:10,cursor:"pointer"}}>+</button>
+                )}
+                <div style={{display:"flex",gap:2,width:"100%",marginTop:1}}>
+                  <input value={newTagInputs[cat]||""} onChange={e=>setNewTagInputs(p=>({...p,[cat]:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&addTag(cat)} placeholder="+ 新标签" style={{flex:1,background:"transparent",border:"1px solid #1e1e22",borderRadius:2,padding:"2px 4px",color:"#9ca3af",fontSize:8,outline:"none"}}/>
+                  <button onClick={()=>addTag(cat)} style={{background:"#1e1e22",border:"none",color:"#9ca3af",borderRadius:2,padding:"2px 5px",fontSize:8,cursor:"pointer"}}>+</button>
                 </div>
               </div>
             </div>
           ))}
-
-          {/* 新增分类 */}
-          <div style={{paddingTop:10,borderTop:"1px solid #1e1e22"}}>
-            <div style={{fontSize:10,color:"#6b6b75",marginBottom:5}}>新增分类</div>
-            <div style={{display:"flex",gap:3}}>
-              <input value={newCatInput} onChange={e=>setNewCatInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCat()} placeholder="输入分类名称..."
-                style={{flex:1,background:"transparent",border:"1px solid #1e1e22",borderRadius:4,padding:"4px 7px",color:"#9ca3af",fontSize:10,outline:"none"}}/>
-              <button onClick={addCat} style={{background:"#1e1e22",border:"1px solid #2a2a2e",color:"#9ca3af",borderRadius:4,padding:"4px 9px",fontSize:10,cursor:"pointer"}}>+</button>
+          <div style={{paddingTop:7,borderTop:"1px solid #1e1e22"}}>
+            <div style={{fontSize:8,color:"#6b6b75",marginBottom:3}}>新增分类</div>
+            <div style={{display:"flex",gap:2}}>
+              <input value={newCatInput} onChange={e=>setNewCatInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addCat()} placeholder="输入分类名称..." style={{flex:1,background:"transparent",border:"1px solid #1e1e22",borderRadius:2,padding:"2px 5px",color:"#9ca3af",fontSize:8,outline:"none"}}/>
+              <button onClick={addCat} style={{background:"#1e1e22",border:"1px solid #2a2a2e",color:"#9ca3af",borderRadius:2,padding:"2px 6px",fontSize:8,cursor:"pointer"}}>+</button>
             </div>
           </div>
         </div>
 
-        {/* DRAG HANDLE */}
-        <div onMouseDown={onDragStart}
-          style={{width:5,flexShrink:0,cursor:"col-resize",background:"transparent",borderRight:"1px solid #1e1e22",position:"relative",transition:"background .15s"}}
-          onMouseEnter={e=>e.currentTarget.style.background="#f59e0b33"}
-          onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-          <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",width:3,height:32,borderRadius:2,background:"#2a2a2e",pointerEvents:"none"}}/>
-        </div>
+        {/* 拖拽调宽 */}
+        <div onMouseDown={onDragStart} style={{width:4,flexShrink:0,cursor:"col-resize",background:"transparent",borderRight:"1px solid #1e1e22"}} onMouseEnter={e=>e.currentTarget.style.background="#f59e0b33"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}/>
 
-        {/* MAIN */}
+        {/* ══ 主区域 ══ */}
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-          <div style={{padding:"13px 16px",borderBottom:"1px solid #1e1e22",flexShrink:0}}>
-            <div style={{fontSize:10,color:"#6b6b75",marginBottom:6,letterSpacing:"0.08em"}}>输入你的素材方向</div>
-            <div style={{display:"flex",gap:8}}>
-              <input value={topic} onChange={e=>setTopic(e.target.value)} onKeyDown={e=>e.key==="Enter"&&generateIdeas()}
-                placeholder={`例如：${activeGP}游戏关卡挑战，激发玩家尝试欲...`}
-                style={{flex:1,background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:8,padding:"10px 14px",color:"#e2e0db",fontSize:13,outline:"none"}}/>
-              <button onClick={generateIdeas} disabled={loadingIdeas}
-                style={{padding:"10px 22px",borderRadius:8,background:loadingIdeas?"#1e1e22":"linear-gradient(135deg,#f59e0b,#ef4444)",border:"none",color:loadingIdeas?"#4b4b55":"#fff",fontSize:13,fontWeight:600,cursor:loadingIdeas?"not-allowed":"pointer",whiteSpace:"nowrap",flexShrink:0}}>
-                {loadingIdeas?"生成中...":"✦ 发散创意"}
-              </button>
+          <div style={{padding:"10px 12px",borderBottom:"1px solid #1e1e22",flexShrink:0}}>
+            {activeKB.length>0&&<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 9px",borderRadius:5,background:"#a78bfa0d",border:"1px solid #a78bfa2a",marginBottom:7,fontSize:8,color:"#c4b5fd"}}>
+              📚 知识库已激活：{activeKB.map(i=>`${typeIcon[i.type]}「${i.name}」`).join(" ")}<span style={{marginLeft:"auto",color:"#6b6b75"}}>AI 将参考以上内容</span>
+            </div>}
+            {!apiReady&&<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 9px",borderRadius:5,background:"#2a1212",border:"1px solid #7f1d1d33",marginBottom:7,fontSize:8,color:"#fca5a5"}}>
+              ⚠ 尚未配置 API Key，请点击右上角按钮进入设置
+            </div>}
+            <div style={{fontSize:8,color:"#6b6b75",marginBottom:4,letterSpacing:".08em"}}>输入你的素材方向</div>
+            <div style={{display:"flex",gap:6}}>
+              <input value={topic} onChange={e=>setTopic(e.target.value)} onKeyDown={e=>e.key==="Enter"&&generateIdeas()} placeholder={`例如：${activeGP}游戏关卡挑战，激发玩家尝试欲...`} style={{flex:1,background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:6,padding:"8px 11px",color:"#e2e0db",fontSize:11,outline:"none"}}/>
+              <button onClick={generateIdeas} disabled={loadingIdeas} style={{padding:"8px 16px",borderRadius:6,background:loadingIdeas?"#1e1e22":"linear-gradient(135deg,#f59e0b,#ef4444)",border:"none",color:loadingIdeas?"#4b4b55":"#fff",fontSize:11,fontWeight:600,cursor:loadingIdeas?"not-allowed":"pointer",whiteSpace:"nowrap",flexShrink:0}}>{loadingIdeas?"生成中...":"✦ 发散"}</button>
             </div>
-            {ideasErr && <div style={{color:"#f87171",fontSize:11,marginTop:5}}>{ideasErr}</div>}
+            {ideasErr&&<div style={{color:"#f87171",fontSize:9,marginTop:3}}>{ideasErr}</div>}
           </div>
 
           <div style={{flex:1,display:"flex",overflow:"hidden",minHeight:0}}>
-            {/* 创意列表 */}
-            <div style={{flex:ideas.length?"0 0 340px":1,overflowY:"auto",padding:12,borderRight:ideas.length?"1px solid #1e1e22":"none"}}>
-              {/* 重新生成按钮 — 有创意结果时显示 */}
-              {ideas.length>0 && !loadingIdeas && (
-                <button onClick={generateIdeas}
-                  style={{width:"100%",marginBottom:10,padding:"7px 0",borderRadius:8,background:"transparent",border:"1px dashed #2a2a2e",color:"#6b6b75",fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,transition:"all .15s"}}
-                  onMouseEnter={e=>{e.currentTarget.style.borderColor="#f59e0b66";e.currentTarget.style.color="#f59e0b";}}
-                  onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2a2e";e.currentTarget.style.color="#6b6b75";}}>
-                  <span style={{fontSize:13}}>↺</span> 重新生成
-                </button>
-              )}
-              {!ideas.length && !loadingIdeas && (
-                <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"60vh",textAlign:"center"}}>
-                  <div style={{fontSize:36,color:"#2a2a35",marginBottom:10}}>✦</div>
-                  <div style={{fontSize:13,color:"#3a3a45"}}>输入方向，发散创意</div>
-                  <div style={{fontSize:11,color:"#2a2a35",marginTop:5}}>AI 结合标签生成 4-5 个方向</div>
-                </div>
-              )}
-              {loadingIdeas && [1,2,3,4].map(i=>(
-                <div key={i} className="pulse" style={{background:"#1a1a1e",borderRadius:10,padding:14,marginBottom:8}}>
-                  <div style={{height:13,background:"#2a2a2e",borderRadius:4,width:"55%",marginBottom:8}}/>
-                  <div style={{height:10,background:"#2a2a2e",borderRadius:4,width:"85%",marginBottom:4}}/>
-                  <div style={{height:10,background:"#2a2a2e",borderRadius:4,width:"70%"}}/>
-                </div>
-              ))}
+            <div style={{flex:ideas.length?"0 0 280px":1,overflowY:"auto",padding:9,borderRight:ideas.length?"1px solid #1e1e22":"none"}}>
+              {ideas.length>0&&!loadingIdeas&&<button onClick={generateIdeas} style={{width:"100%",marginBottom:7,padding:"5px",borderRadius:6,background:"transparent",border:"1px dashed #2a2a2e",color:"#6b6b75",fontSize:9,cursor:"pointer"}} onMouseEnter={e=>{e.currentTarget.style.borderColor="#f59e0b66";e.currentTarget.style.color="#f59e0b";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2a2e";e.currentTarget.style.color="#6b6b75";}}>↺ 重新生成</button>}
+              {!ideas.length&&!loadingIdeas&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"55%",textAlign:"center"}}><div style={{fontSize:28,color:"#2a2a35",marginBottom:7}}>✦</div><div style={{fontSize:11,color:"#3a3a45"}}>输入方向，发散创意</div><div style={{fontSize:9,color:"#2a2a35",marginTop:3}}>AI 结合标签{activeKB.length?"+知识库":""}生成 5 个方向</div></div>}
+              {loadingIdeas&&[1,2,3,4].map(i=><div key={i} className="pulse" style={{background:"#1a1a1e",borderRadius:7,padding:10,marginBottom:6}}><div style={{height:11,background:"#2a2a2e",borderRadius:3,width:"55%",marginBottom:6}}/><div style={{height:8,background:"#2a2a2e",borderRadius:3,width:"85%",marginBottom:3}}/><div style={{height:8,background:"#2a2a2e",borderRadius:3,width:"70%"}}/></div>)}
               {ideas.map((idea,i)=>(
-                <div key={i} className="fade-up" onClick={()=>selectIdea(idea)}
-                  style={{background:selectedIdea?.title===idea.title?"#1c1a0f":"#1a1a1e",border:`1px solid ${selectedIdea?.title===idea.title?"#f59e0b44":"#2a2a2e"}`,borderRadius:10,padding:12,marginBottom:8,cursor:"pointer"}}>
-                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                    <div style={{display:"flex",alignItems:"center",gap:7}}>
-                      <span style={{width:18,height:18,borderRadius:"50%",background:EC[i%EC.length]+"22",color:EC[i%EC.length],fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",border:`1px solid ${EC[i%EC.length]}44`,flexShrink:0}}>{i+1}</span>
-                      <span style={{fontSize:13,fontWeight:600,color:"#fff"}}>{idea.title}</span>
-                    </div>
-                    {idea.emotion&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:3,background:EC[i%EC.length]+"22",color:EC[i%EC.length],border:`1px solid ${EC[i%EC.length]}33`,flexShrink:0}}>{idea.emotion}</span>}
+                <div key={i} className="fade-up" onClick={()=>selectIdea(idea)} style={{background:selectedIdea?.title===idea.title?"#1c1a0f":"#1a1a1e",border:`1px solid ${selectedIdea?.title===idea.title?"#f59e0b44":"#2a2a2e"}`,borderRadius:7,padding:9,marginBottom:6,cursor:"pointer"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
+                    <div style={{display:"flex",alignItems:"center",gap:5}}><span style={{width:14,height:14,borderRadius:"50%",background:EC[i%EC.length]+"22",color:EC[i%EC.length],fontSize:7,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",border:`1px solid ${EC[i%EC.length]}44`,flexShrink:0}}>{i+1}</span><span style={{fontSize:11,fontWeight:600,color:"#fff"}}>{idea.title}</span></div>
+                    {idea.emotion&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:EC[i%EC.length]+"22",color:EC[i%EC.length],border:`1px solid ${EC[i%EC.length]}33`,flexShrink:0}}>{idea.emotion}</span>}
                   </div>
-                  {idea.hook&&<div style={{fontSize:11,color:"#f59e0b",marginBottom:4,fontStyle:"italic"}}>「{idea.hook}」</div>}
-                  <div style={{fontSize:11,color:"#9ca3af",lineHeight:1.6,marginBottom:6}}>{idea.concept}</div>
-                  <div style={{display:"flex",flexWrap:"wrap",gap:3,marginBottom:5}}>
-                    {(idea.tags||[]).map((tag,j)=><span key={j} style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:"#2a2a2e",color:"#6b6b75"}}>{tag}</span>)}
-                  </div>
-                  {idea.effect&&<div style={{fontSize:10,color:"#10b981",borderTop:"1px solid #1e2e26",paddingTop:5,marginTop:3}}>📈 {idea.effect}</div>}
+                  {idea.hook&&<div style={{fontSize:9,color:"#f59e0b",marginBottom:3,fontStyle:"italic"}}>「{idea.hook}」</div>}
+                  <div style={{fontSize:9,color:"#9ca3af",lineHeight:1.6,marginBottom:4}}>{idea.concept}</div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:2,marginBottom:3}}>{(idea.tags||[]).map((t,j)=><span key={j} style={{fontSize:7,padding:"1px 3px",borderRadius:2,background:"#2a2a2e",color:"#6b6b75"}}>{t}</span>)}</div>
+                  {idea.effect&&<div style={{fontSize:8,color:"#10b981",borderTop:"1px solid #1e2e26",paddingTop:3,marginTop:2}}>📈 {idea.effect}</div>}
                 </div>
               ))}
             </div>
 
-            {/* 详情面板 */}
             {selectedIdea&&(
-              <div style={{flex:1,overflowY:"auto",padding:14,background:"#0a0a0c",minWidth:0}}>
-                <div style={{marginBottom:12}}>
-                  <div style={{fontSize:10,color:"#6b6b75",marginBottom:2}}>当前方向</div>
-                  <div style={{fontSize:14,fontWeight:700,color:"#fff"}}>{selectedIdea.title}</div>
-                </div>
-                <div style={{display:"flex",gap:6,marginBottom:14}}>
-                  {[{id:"psd",label:"PSD 素材需求",loading:loadingPSD},{id:"sop",label:"剪辑 SOP 脚本",loading:loadingSOP}].map(tab=>(
-                    <button key={tab.id} onClick={()=>setActiveTab(tab.id)}
-                      style={{padding:"6px 14px",borderRadius:7,border:`1px solid ${activeTab===tab.id?"#f59e0b":"#2a2a2e"}`,background:activeTab===tab.id?"#f59e0b11":"transparent",color:activeTab===tab.id?"#f59e0b":"#6b6b75",fontSize:11,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
-                      {tab.label}
-                      {tab.loading&&<span className="pulse" style={{width:6,height:6,borderRadius:"50%",background:"#f59e0b",display:"inline-block"}}/>}
+              <div style={{flex:1,overflowY:"auto",padding:11,background:"#0a0a0c",minWidth:0}}>
+                <div style={{marginBottom:9}}><div style={{fontSize:8,color:"#6b6b75",marginBottom:2}}>当前方向</div><div style={{fontSize:12,fontWeight:700,color:"#fff"}}>{selectedIdea.title}</div></div>
+                <div style={{display:"flex",gap:5,marginBottom:11}}>
+                  {[{id:"psd",label:"PSD 素材需求",loading:loadingPSD},{id:"sop",label:"剪辑 SOP 脚本",loading:loadingSOP}].map(t=>(
+                    <button key={t.id} onClick={()=>setActiveTab(t.id)} style={{padding:"4px 11px",borderRadius:5,border:`1px solid ${activeTab===t.id?"#f59e0b":"#2a2a2e"}`,background:activeTab===t.id?"#f59e0b11":"transparent",color:activeTab===t.id?"#f59e0b":"#6b6b75",fontSize:9,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:4}}>
+                      {t.label}{t.loading&&<span className="pulse" style={{width:4,height:4,borderRadius:"50%",background:"#f59e0b",display:"inline-block"}}/>}
                     </button>
                   ))}
                 </div>
-
                 {activeTab==="psd"&&<>
-                  {loadingPSD&&[1,2,3].map(i=>(
-                    <div key={i} className="pulse" style={{background:"#1a1a1e",borderRadius:10,padding:12,marginBottom:8}}>
-                      <div style={{height:12,background:"#2a2a2e",borderRadius:4,width:"45%",marginBottom:7}}/>
-                      <div style={{height:10,background:"#2a2a2e",borderRadius:4,width:"75%"}}/>
-                    </div>
-                  ))}
-                  {psdErr&&(
-                    <div style={{background:"#2a1212",border:"1px solid #7f1d1d",borderRadius:8,padding:"10px 12px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <span style={{fontSize:12,color:"#fca5a5"}}>⚠ {psdErr}</span>
-                      <button onClick={retryPSD} style={{background:"#3a1a1a",border:"1px solid #7f1d1d",borderRadius:5,color:"#fca5a5",fontSize:11,padding:"3px 10px",cursor:"pointer"}}>重试</button>
-                    </div>
-                  )}
-                  {psdData&&(
-                    <div className="fade-up" style={{background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:10,padding:14}}>
-                      {/* 文件名 + 尺寸 */}
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                        <div style={{display:"flex",alignItems:"center",gap:7}}>
-                          <div style={{width:24,height:24,background:"#2a1a0a",borderRadius:5,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#f59e0b",fontWeight:700}}>PSD</div>
-                          <div style={{fontSize:12,fontWeight:600,color:"#fff"}}>{psdData.name}</div>
-                        </div>
-                        {psdData.size&&<span style={{fontSize:10,color:"#6b6b75",background:"#1e1e22",padding:"2px 7px",borderRadius:3,flexShrink:0}}>{psdData.size}</span>}
-                      </div>
-                      {/* 整体风格 */}
-                      {psdData.style&&(
-                        <div style={{fontSize:11,color:"#f59e0b",background:"#1e1a10",border:"1px solid #f59e0b22",borderRadius:6,padding:"6px 10px",marginBottom:10}}>
-                          🎨 {psdData.style}
-                        </div>
-                      )}
-                      {/* 图层结构 */}
-                      {(psdData.layers||[]).length>0&&(
-                        <div style={{marginBottom:10}}>
-                          <div style={{fontSize:9,color:"#6b6b75",letterSpacing:"0.08em",marginBottom:6}}>图层结构（从底到顶）</div>
-                          {psdData.layers.map((layer,j)=>(
-                            <div key={j} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"5px 0",borderBottom:"1px solid #1e1e22"}}>
-                              <span style={{fontSize:9,color:"#f59e0b44",fontWeight:700,flexShrink:0,marginTop:1,width:16,textAlign:"right"}}>{psdData.layers.length-j}</span>
-                              <span style={{fontSize:11,color:"#9ca3af",lineHeight:1.5}}>{layer}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {/* 制作要点 */}
-                      {psdData.notes&&(
-                        <div style={{fontSize:10,color:"#6b6b75",background:"#14141a",border:"1px solid #1e1e22",borderRadius:6,padding:"8px 10px",lineHeight:1.7}}>
-                          📝 {psdData.notes}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {loadingPSD&&[1,2,3].map(i=><div key={i} className="pulse" style={{background:"#1a1a1e",borderRadius:7,padding:9,marginBottom:6}}><div style={{height:10,background:"#2a2a2e",borderRadius:2,width:"45%",marginBottom:5}}/><div style={{height:8,background:"#2a2a2e",borderRadius:2,width:"75%"}}/></div>)}
+                  {psdErr&&<div style={{background:"#2a1212",border:"1px solid #7f1d1d",borderRadius:6,padding:"7px 9px",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}}><span style={{fontSize:10,color:"#fca5a5"}}>⚠ {psdErr}</span><button onClick={retryPSD} style={{background:"#3a1a1a",border:"1px solid #7f1d1d",borderRadius:3,color:"#fca5a5",fontSize:9,padding:"2px 7px",cursor:"pointer"}}>重试</button></div>}
+                  {psdData&&<div className="fade-up" style={{background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:7,padding:11}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}><div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:20,height:20,background:"#2a1a0a",borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,color:"#f59e0b",fontWeight:700}}>PSD</div><div style={{fontSize:10,fontWeight:600,color:"#fff"}}>{psdData.name}</div></div>{psdData.size&&<span style={{fontSize:8,color:"#6b6b75",background:"#1e1e22",padding:"1px 5px",borderRadius:2}}>{psdData.size}</span>}</div>
+                    {psdData.style&&<div style={{fontSize:9,color:"#f59e0b",background:"#1e1a10",border:"1px solid #f59e0b22",borderRadius:4,padding:"4px 7px",marginBottom:7}}>🎨 {psdData.style}</div>}
+                    {(psdData.layers||[]).length>0&&<div style={{marginBottom:7}}><div style={{fontSize:7,color:"#6b6b75",letterSpacing:".08em",marginBottom:4}}>图层结构（从底到顶）</div>{psdData.layers.map((l,j)=><div key={j} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"3px 0",borderBottom:"1px solid #1e1e22"}}><span style={{fontSize:7,color:"#f59e0b55",fontWeight:700,flexShrink:0,width:12,textAlign:"right",marginTop:1}}>{psdData.layers.length-j}</span><span style={{fontSize:9,color:"#9ca3af",lineHeight:1.5}}>{l}</span></div>)}</div>}
+                    {psdData.notes&&<div style={{fontSize:8,color:"#6b6b75",background:"#14141a",border:"1px solid #1e1e22",borderRadius:4,padding:"6px 8px",lineHeight:1.7}}>📝 {psdData.notes}</div>}
+                  </div>}
                 </>}
-
                 {activeTab==="sop"&&<>
-                  {loadingSOP&&[1,2,3,4].map(i=>(
-                    <div key={i} style={{display:"flex",gap:12,marginBottom:8}}>
-                      <div style={{width:30,display:"flex",justifyContent:"center"}}>
-                        <div className="pulse" style={{width:18,height:18,borderRadius:"50%",background:"#2a2a2e"}}/>
+                  {loadingSOP&&[1,2,3,4].map(i=><div key={i} style={{display:"flex",gap:8,marginBottom:6}}><div style={{width:22,display:"flex",justifyContent:"center"}}><div className="pulse" style={{width:14,height:14,borderRadius:"50%",background:"#2a2a2e"}}/></div><div className="pulse" style={{flex:1,background:"#1a1a1e",borderRadius:6,padding:8}}><div style={{height:10,background:"#2a2a2e",borderRadius:2,width:"40%",marginBottom:4}}/><div style={{height:8,background:"#2a2a2e",borderRadius:2,width:"80%"}}/></div></div>)}
+                  {sopErr&&<div style={{background:"#2a1212",border:"1px solid #7f1d1d",borderRadius:6,padding:"7px 9px",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}}><span style={{fontSize:10,color:"#fca5a5"}}>⚠ {sopErr}</span><button onClick={retrySOP} style={{background:"#3a1a1a",border:"1px solid #7f1d1d",borderRadius:3,color:"#fca5a5",fontSize:9,padding:"2px 7px",cursor:"pointer"}}>重试</button></div>}
+                  {sopData&&<div style={{position:"relative"}}><div style={{position:"absolute",left:10,top:16,bottom:16,width:1.5,background:"linear-gradient(to bottom,#f59e0b,transparent)"}}/>
+                    {sopData.map((step,i)=><div key={i} className="fade-up" style={{display:"flex",gap:8,position:"relative",marginBottom:6}}>
+                      <div style={{width:22,flexShrink:0,display:"flex",justifyContent:"center"}}><div style={{width:14,height:14,borderRadius:"50%",background:i===0?"#f59e0b":"#1a1a1e",border:`1.5px solid ${i===0?"#f59e0b":"#2a2a2e"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:7,fontWeight:700,color:i===0?"#000":"#6b6b75",zIndex:1}}>{step.step}</div></div>
+                      <div style={{flex:1,background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:6,padding:8}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}><div style={{fontSize:10,fontWeight:600,color:"#fff"}}>{step.title}</div>{step.duration&&<span style={{fontSize:7,color:"#f59e0b",background:"#1e1a10",padding:"1px 4px",borderRadius:2,flexShrink:0}}>{step.duration}</span>}</div>
+                        {step.action&&<div style={{fontSize:9,color:"#9ca3af",lineHeight:1.6,marginBottom:2}}>{step.action}</div>}
+                        {step.emotion&&<div style={{fontSize:8,color:"#a78bfa",marginBottom:2}}>情绪：{step.emotion}</div>}
+                        {step.tip&&<div style={{fontSize:8,color:"#10b981",borderTop:"1px solid #1e2e26",paddingTop:2,marginTop:2}}>💡 {step.tip}</div>}
                       </div>
-                      <div className="pulse" style={{flex:1,background:"#1a1a1e",borderRadius:8,padding:10}}>
-                        <div style={{height:12,background:"#2a2a2e",borderRadius:4,width:"40%",marginBottom:6}}/>
-                        <div style={{height:10,background:"#2a2a2e",borderRadius:4,width:"80%"}}/>
-                      </div>
-                    </div>
-                  ))}
-                  {sopErr&&(
-                    <div style={{background:"#2a1212",border:"1px solid #7f1d1d",borderRadius:8,padding:"10px 12px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <span style={{fontSize:12,color:"#fca5a5"}}>⚠ {sopErr}</span>
-                      <button onClick={retrySOP} style={{background:"#3a1a1a",border:"1px solid #7f1d1d",borderRadius:5,color:"#fca5a5",fontSize:11,padding:"3px 10px",cursor:"pointer"}}>重试</button>
-                    </div>
-                  )}
-                  {sopData&&(
-                    <div style={{position:"relative"}}>
-                      <div style={{position:"absolute",left:14,top:22,bottom:22,width:1.5,background:"linear-gradient(to bottom,#f59e0b,transparent)"}}/>
-                      {sopData.map((step,i)=>(
-                        <div key={i} className="fade-up" style={{display:"flex",gap:12,position:"relative",marginBottom:8}}>
-                          <div style={{width:30,flexShrink:0,display:"flex",justifyContent:"center"}}>
-                            <div style={{width:18,height:18,borderRadius:"50%",background:i===0?"#f59e0b":"#1a1a1e",border:`1.5px solid ${i===0?"#f59e0b":"#2a2a2e"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:i===0?"#000":"#6b6b75",zIndex:1}}>{step.step}</div>
-                          </div>
-                          <div style={{flex:1,background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:8,padding:10}}>
-                            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
-                              <div style={{fontSize:12,fontWeight:600,color:"#fff"}}>{step.title}</div>
-                              {step.duration&&<span style={{fontSize:9,color:"#f59e0b",background:"#1e1a10",padding:"2px 6px",borderRadius:3,flexShrink:0}}>{step.duration}</span>}
-                            </div>
-                            {step.action&&<div style={{fontSize:11,color:"#9ca3af",lineHeight:1.6,marginBottom:4}}>{step.action}</div>}
-                            {step.emotion&&<div style={{fontSize:10,color:"#a78bfa",marginBottom:3}}>情绪：{step.emotion}</div>}
-                            {step.tip&&<div style={{fontSize:10,color:"#10b981",borderTop:"1px solid #1e2e26",paddingTop:4,marginTop:3}}>💡 {step.tip}</div>}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                    </div>)}
+                  </div>}
                 </>}
               </div>
             )}
@@ -754,104 +545,168 @@ JSON格式（严格遵守）：
         </div>
       </div>
 
-      {/* 设置弹窗 */}
-      {showSettings&&(
-        <div onClick={e=>e.target===e.currentTarget&&setShowSettings(false)}
-          style={{position:"fixed",inset:0,background:"rgba(0,0,0,.78)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}}>
-          <div style={{background:"#16161a",border:"1px solid #2a2a2e",borderRadius:14,padding:22,width:420,maxWidth:"92vw",maxHeight:"90vh",overflowY:"auto"}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
-              <div style={{fontSize:14,fontWeight:600,color:"#fff"}}>⚙ AI 接口配置</div>
-              <button onClick={()=>setShowSettings(false)} style={{background:"none",border:"none",color:"#6b6b75",cursor:"pointer",fontSize:18,lineHeight:1}}>✕</button>
-            </div>
-            <div style={{marginBottom:14}}>
-              <div style={{fontSize:11,color:"#6b6b75",marginBottom:8}}>选择厂商</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-                {Object.entries(PROVIDERS).map(([id,p])=>(
-                  <button key={id} onClick={()=>setAiCfg(c=>({...c,providerId:id,model:p.defaultModel}))}
-                    style={{padding:"8px 10px",borderRadius:7,border:`1px solid ${aiCfg.providerId===id?"#f59e0b":"#2a2a2e"}`,background:aiCfg.providerId===id?"#f59e0b11":"#1a1a1e",color:aiCfg.providerId===id?"#f59e0b":"#9ca3af",fontSize:11,cursor:"pointer",textAlign:"left",fontWeight:aiCfg.providerId===id?600:400}}>
-                    {p.label}
-                  </button>
+      {/* ══════════════ 知识库弹窗 ══════════════ */}
+      {showKB&&(
+        <div onClick={e=>e.target===e.currentTarget&&setShowKB(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:300}}>
+          <div style={{background:"#13131a",border:"1px solid #2a2a2e",borderRadius:14,width:560,maxWidth:"96vw",maxHeight:"90vh",display:"flex",flexDirection:"column",overflow:"hidden"}}
+            onDrop={onDrop} onDragOver={e=>{e.preventDefault();setDragover(true);}} onDragLeave={()=>setDragover(false)}>
+            <div style={{padding:"14px 18px 0",flexShrink:0}}>
+              <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:12}}>
+                <div><div style={{fontSize:14,fontWeight:700,color:"#fff"}}>📚 知识库</div><div style={{fontSize:9,color:"#6b6b75",marginTop:2}}>上传视频 / 图片 / 文字，AI 学习后生成更精准的内容</div></div>
+                <button onClick={()=>setShowKB(false)} style={{background:"none",border:"none",color:"#6b6b75",cursor:"pointer",fontSize:18,lineHeight:1,marginTop:2}}>✕</button>
+              </div>
+              <div style={{display:"flex",borderBottom:"1px solid #1e1e22"}}>
+                {[{id:"list",label:`📋 列表 (${kb.length})`},{id:"video",label:"🎬 视频"},{id:"image",label:"🖼️ 图片"},{id:"text",label:"✏️ 文字"}].map(t=>(
+                  <button key={t.id} onClick={()=>setKbTab(t.id)} style={{flex:1,padding:"8px 4px",background:"transparent",border:"none",borderBottom:kbTab===t.id?"2px solid #a78bfa":"2px solid transparent",color:kbTab===t.id?"#c4b5fd":"#6b6b75",fontSize:9,cursor:"pointer",fontWeight:kbTab===t.id?600:400,whiteSpace:"nowrap"}}>{t.label}</button>
                 ))}
               </div>
             </div>
-            {aiCfg.providerId!=="custom"&&PROVIDERS[aiCfg.providerId]?.models?.length>0&&(
-              <div style={{marginBottom:14}}>
-                <div style={{fontSize:11,color:"#6b6b75",marginBottom:7}}>模型</div>
-                <select value={aiCfg.model} onChange={e=>setAiCfg(c=>({...c,model:e.target.value}))}
-                  style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:7,padding:"9px 10px",color:"#e2e0db",fontSize:12,outline:"none"}}>
-                  {PROVIDERS[aiCfg.providerId].models.map(m=><option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-            )}
-            {aiCfg.providerId==="custom"&&<>
-              <div style={{marginBottom:14}}>
-                <div style={{fontSize:11,color:"#6b6b75",marginBottom:7}}>API 地址（OpenAI 兼容）</div>
-                <input value={aiCfg.customBaseURL} onChange={e=>setAiCfg(c=>({...c,customBaseURL:e.target.value}))} placeholder="https://your-proxy.com/v1/chat/completions"
-                  style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:7,padding:"9px 10px",color:"#e2e0db",fontSize:12,outline:"none"}}/>
-              </div>
-              <div style={{marginBottom:14}}>
-                <div style={{fontSize:11,color:"#6b6b75",marginBottom:7}}>模型名称</div>
-                <input value={aiCfg.customModel} onChange={e=>setAiCfg(c=>({...c,customModel:e.target.value}))} placeholder="gpt-4o / gemini-pro / ..."
-                  style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:7,padding:"9px 10px",color:"#e2e0db",fontSize:12,outline:"none"}}/>
-              </div>
-            </>}
-            <div style={{marginBottom:18}}>
-              <div style={{fontSize:11,color:"#6b6b75",marginBottom:7}}>API Key</div>
-              <input type="password" value={aiCfg.apiKey} onChange={e=>setAiCfg(c=>({...c,apiKey:e.target.value}))}
-                placeholder={PROVIDERS[aiCfg.providerId]?.keyPlaceholder||"your-api-key"}
-                style={{width:"100%",background:"#1a1a1e",border:`1px solid ${aiCfg.apiKey?"#10b98144":"#2a2a2e"}`,borderRadius:7,padding:"9px 10px",color:"#e2e0db",fontSize:12,outline:"none",fontFamily:"monospace"}}/>
-              <div style={{fontSize:10,color:"#4b4b55",marginTop:5}}>Key 仅保存在本页面内存中，刷新后需重新填写</div>
+            {dragover&&<div style={{position:"absolute",inset:0,background:"#a78bfa18",border:"2px dashed #a78bfa",borderRadius:14,display:"flex",alignItems:"center",justifyContent:"center",zIndex:10,pointerEvents:"none"}}><div style={{fontSize:14,color:"#c4b5fd",fontWeight:600}}>🎬 拖拽文件到这里</div></div>}
+
+            <div style={{flex:1,overflowY:"auto",padding:"14px 18px"}}>
+              {/* 列表 */}
+              {kbTab==="list"&&(kb.length===0
+                ?<div style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:36,marginBottom:10}}>📭</div><div style={{fontSize:12,color:"#4b4b55"}}>知识库为空</div><div style={{fontSize:9,color:"#333",marginTop:4}}>上传视频、图片或文字参考，让 AI 生成更精准</div></div>
+                :<div>
+                  <div className="drop-zone" style={{padding:"10px",marginBottom:12,color:"#4b4b55",fontSize:9}} onClick={()=>{const i=document.createElement("input");i.type="file";i.multiple=true;i.accept="video/*,image/*,.txt,.md";i.onchange=async e=>{const files=Array.from(e.target.files||[]);const vids=files.filter(f=>f.type.startsWith("video/"));const imgs=files.filter(f=>f.type.startsWith("image/"));const txts=files.filter(f=>!f.type.startsWith("image/")&&!f.type.startsWith("video/"));if(vids.length){setKbTab("video");await loadVideoPreview(vids[0]);}else if(imgs.length){setKbTab("image");await handleImages(imgs);}else if(txts.length){const t=await fileToText(txts[0]).catch(()=>"");setTxtName(txts[0].name.replace(/\.[^.]+$/,""));setTxtContent(t.slice(0,8000));setKbTab("text");}};i.click();}}>
+                    拖拽或点击快速添加（视频 / 图片 / 文本文件）
+                  </div>
+                  {kb.map(item=>(
+                    <div key={item.id} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"10px 12px",background:"#1a1a1e",border:`1px solid ${item.disabled?"#1a1a1e":"#262630"}`,borderRadius:8,marginBottom:6,opacity:item.disabled?0.4:1,transition:"opacity .2s"}}>
+                      {(item.type==="image"||item.type==="video")&&item.preview?<img src={item.preview} alt="" style={{width:50,height:50,objectFit:"cover",borderRadius:5,flexShrink:0,border:"1px solid #2a2a2e"}}/>:<div style={{width:50,height:50,borderRadius:5,background:"#0d0d14",border:"1px solid #2a2a2e",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontSize:20}}>{typeIcon[item.type]}</div>}
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3,flexWrap:"wrap"}}>
+                          <span style={{fontSize:10,fontWeight:600,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.name}</span>
+                          <span style={{fontSize:7,padding:"1px 5px",borderRadius:10,background:typeColor[item.type]+"22",color:typeColor[item.type],border:`1px solid ${typeColor[item.type]}44`,flexShrink:0}}>{typeLabel[item.type]}</span>
+                          <span style={{fontSize:7,color:"#3a3a45",marginLeft:"auto",flexShrink:0}}>{item.size}</span>
+                        </div>
+                        {item.type==="video"&&<div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{(item.frames||[]).map((f,fi)=>f.preview&&<img key={fi} src={f.preview} alt={f.label} title={f.label} style={{height:28,width:"auto",borderRadius:3,objectFit:"cover",border:"1px solid #2a2a2e"}}/>)}</div>}
+                        {(item.type==="text"||item.type==="script")&&<div style={{fontSize:8,color:"#5a5a65",lineHeight:1.5,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{item.content?.slice(0,120)}</div>}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:4,flexShrink:0}}>
+                        <button onClick={()=>toggleKB(item.id)} style={{background:item.disabled?"#1e1e22":"#14532d1a",border:`1px solid ${item.disabled?"#2a2a2e":"#10b98133"}`,borderRadius:4,color:item.disabled?"#4b4b55":"#10b981",fontSize:8,padding:"2px 7px",cursor:"pointer"}}>{item.disabled?"启用":"✓"}</button>
+                        <button onClick={()=>deleteKB(item.id)} style={{background:"#1a0808",border:"1px solid #7f1d1d1a",borderRadius:4,color:"#f87171",fontSize:8,padding:"2px 7px",cursor:"pointer"}}>删除</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 视频 */}
+              {kbTab==="video"&&<div>
+                <div style={{background:"#1a1a2a",border:"1px solid #a78bfa22",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:9,color:"#9ca3af",lineHeight:1.7}}>
+                  🎬 直接上传视频，自动抽取关键帧让 Claude Vision 分析视觉风格。<br/>
+                  支持 MP4 / MOV / WEBM，在浏览器本地处理，<b>不上传服务器</b>。<br/>
+                  ⚠ <b style={{color:"#fbbf24"}}>注意：</b>视频帧将存入 localStorage（5MB 限制），建议 &lt;1分钟短视频。
+                </div>
+                {!vidPreview&&!uploading&&<div>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                    <span style={{fontSize:9,color:"#6b6b75"}}>抽取帧数</span>
+                    {[4,6,8].map(n=><button key={n} onClick={()=>setVidFrameCount(n)} style={{padding:"3px 10px",borderRadius:4,border:`1px solid ${vidFrameCount===n?"#a78bfa":"#2a2a2e"}`,background:vidFrameCount===n?"#a78bfa18":"#1a1a1e",color:vidFrameCount===n?"#c4b5fd":"#6b6b75",fontSize:9,cursor:"pointer"}}>{n} 帧</button>)}
+                  </div>
+                  <div className="drop-zone" style={{padding:"36px 20px"}} onDrop={async e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f&&f.type.startsWith("video/"))await loadVideoPreview(f);}} onDragOver={e=>e.preventDefault()} onClick={()=>{const i=document.createElement("input");i.type="file";i.accept="video/*";i.onchange=async e=>{if(e.target.files[0])await loadVideoPreview(e.target.files[0]);};i.click();}}>
+                    <div style={{fontSize:36,marginBottom:10}}>🎬</div><div style={{fontSize:12,color:"#9ca3af",marginBottom:5}}>拖拽视频到此，或点击选择</div><div style={{fontSize:9,color:"#4b4b55"}}>MP4 / MOV / WEBM</div>
+                  </div>
+                </div>}
+                {uploading&&<div style={{textAlign:"center",padding:"40px 0"}}><div style={{fontSize:11,color:"#a78bfa"}}>⏳ 正在抽取关键帧...</div><div style={{fontSize:9,color:"#4b4b55",marginTop:5}}>视频越长，处理时间越久</div>{uploadMsg&&<div style={{fontSize:9,color:"#f87171",marginTop:8}}>{uploadMsg}</div>}</div>}
+                {vidPreview&&!uploading&&<div>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}><span style={{fontSize:11,fontWeight:600,color:"#fff"}}>🎬 {vidPreview.name}</span><span style={{fontSize:9,color:"#4b4b55"}}>已抽取 {vidPreview.frames.length} 帧</span></div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:14}}>{vidPreview.frames.map((f,i)=><div key={i} style={{position:"relative",borderRadius:6,overflow:"hidden",border:"1px solid #2a2a2e",background:"#0d0d14"}}><img src={f.preview} alt={f.label} style={{width:"100%",display:"block"}}/><div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,.65)",padding:"3px 5px",fontSize:8,color:"#fff"}}>帧{i+1} {f.label}</div></div>)}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:12}}>
+                    <span style={{fontSize:9,color:"#6b6b75",flexShrink:0}}>帧数</span>
+                    {[4,6,8].map(n=><button key={n} onClick={()=>setVidFrameCount(n)} style={{padding:"3px 9px",borderRadius:4,border:`1px solid ${vidFrameCount===n?"#a78bfa":"#2a2a2e"}`,background:vidFrameCount===n?"#a78bfa18":"#1a1a1e",color:vidFrameCount===n?"#c4b5fd":"#6b6b75",fontSize:9,cursor:"pointer"}}>{n}</button>)}
+                    <button onClick={reExtractFrames} style={{padding:"3px 10px",borderRadius:4,background:"#1e1e22",border:"1px solid #2a2a2e",color:"#9ca3af",fontSize:9,cursor:"pointer"}}>↺ 重新抽帧</button>
+                    <button onClick={()=>{setVidPreview(null);setUploadMsg("");}} style={{padding:"3px 8px",borderRadius:4,background:"transparent",border:"1px solid #2a2a2e",color:"#6b6b75",fontSize:9,cursor:"pointer"}}>重新选择</button>
+                  </div>
+                  <button onClick={confirmVideo} style={{width:"100%",padding:"10px",borderRadius:8,background:"linear-gradient(135deg,#a78bfa,#6366f1)",border:"none",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>✓ 加入知识库（{vidPreview.frames.length} 帧）</button>
+                </div>}
+              </div>}
+
+              {/* 图片 */}
+              {kbTab==="image"&&<div>
+                <div style={{background:"#1a1a2a",border:"1px solid #a78bfa22",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:9,color:"#9ca3af",lineHeight:1.7}}>
+                  🖼️ 上传竞品广告截图、参考素材图，AI 直接看图学习视觉风格。<br/>
+                  ⚠ 单张建议 &lt; 2MB（localStorage 5MB 总限制），支持 JPG / PNG / WEBP。
+                </div>
+                <div className="drop-zone" style={{padding:"32px 20px",marginBottom:14}} onDrop={async e=>{e.preventDefault();await handleImages(e.dataTransfer.files);}} onDragOver={e=>e.preventDefault()} onClick={()=>{const i=document.createElement("input");i.type="file";i.multiple=true;i.accept="image/*";i.onchange=async e=>await handleImages(e.target.files);i.click();}}>
+                  {uploading?<div style={{fontSize:11,color:"#a78bfa"}}>⏳ 处理中...</div>:<><div style={{fontSize:32,marginBottom:8}}>🖼️</div><div style={{fontSize:11,color:"#9ca3af",marginBottom:4}}>拖拽图片到此，或点击选择</div><div style={{fontSize:9,color:"#4b4b55"}}>支持批量上传</div></>}
+                </div>
+                {kb.filter(i=>i.type==="image").length>0&&<div>
+                  <div style={{fontSize:9,color:"#6b6b75",marginBottom:7}}>已上传图片</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:5}}>{kb.filter(i=>i.type==="image").map(it=><div key={it.id} style={{position:"relative"}}><img src={it.preview} alt={it.name} style={{width:"100%",aspectRatio:"1",objectFit:"cover",borderRadius:5,border:"1px solid #2a2a2e",display:"block"}}/><button onClick={()=>deleteKB(it.id)} style={{position:"absolute",top:2,right:2,width:14,height:14,borderRadius:"50%",background:"rgba(0,0,0,.7)",border:"none",color:"#fff",fontSize:8,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",lineHeight:1}}>✕</button></div>)}</div>
+                </div>}
+                {uploadMsg&&<div style={{fontSize:9,color:"#f87171",marginTop:8}}>{uploadMsg}</div>}
+              </div>}
+
+              {/* 文字 */}
+              {kbTab==="text"&&<div>
+                <div style={{background:"#1a1a2a",border:"1px solid #a78bfa22",borderRadius:8,padding:"10px 12px",marginBottom:14,fontSize:9,color:"#9ca3af",lineHeight:1.7}}>
+                  ✏️ 粘贴竞品分析、爆款脚本、策划文档，AI 学习内容风格和策略框架。
+                </div>
+                <div style={{display:"flex",gap:5,marginBottom:10}}>
+                  {[{id:"script",label:"📝 视频脚本"},{id:"text",label:"📄 文字参考"}].map(t=><button key={t.id} onClick={()=>setTxtType(t.id)} style={{flex:1,padding:"7px 8px",borderRadius:6,border:`1px solid ${txtType===t.id?"#a78bfa":"#2a2a2e"}`,background:txtType===t.id?"#a78bfa11":"#1a1a1e",color:txtType===t.id?"#c4b5fd":"#6b6b75",fontSize:9,cursor:"pointer",textAlign:"left",fontWeight:txtType===t.id?600:400}}>{t.label}</button>)}
+                </div>
+                <div style={{marginBottom:8}}><div style={{fontSize:9,color:"#6b6b75",marginBottom:4}}>参考名称</div><input value={txtName} onChange={e=>setTxtName(e.target.value)} placeholder='例如：「三消爆款30s脚本」' style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:6,padding:"8px 10px",color:"#e2e0db",fontSize:11,outline:"none"}}/></div>
+                <div style={{marginBottom:12}}><div style={{fontSize:9,color:"#6b6b75",marginBottom:4}}>内容（最多 8000 字）</div><textarea value={txtContent} onChange={e=>setTxtContent(e.target.value.slice(0,8000))} placeholder="粘贴文案、脚本、分析内容..." rows={7} style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:6,padding:"8px 10px",color:"#e2e0db",fontSize:11,outline:"none",resize:"vertical",lineHeight:1.6}}/><div style={{fontSize:8,color:"#3a3a45",textAlign:"right",marginTop:2}}>{txtContent.length}/8000 字</div></div>
+                <button onClick={addTextKB} disabled={!txtName.trim()||!txtContent.trim()} style={{width:"100%",padding:"10px",borderRadius:8,background:(!txtName.trim()||!txtContent.trim())?"#1e1e22":"linear-gradient(135deg,#a78bfa,#6366f1)",border:"none",color:(!txtName.trim()||!txtContent.trim())?"#4b4b55":"#fff",fontSize:11,fontWeight:600,cursor:(!txtName.trim()||!txtContent.trim())?"not-allowed":"pointer"}}>✓ 添加到知识库</button>
+              </div>}
             </div>
-            <button onClick={()=>setShowSettings(false)}
-              style={{width:"100%",padding:11,borderRadius:8,background:aiCfg.apiKey?"linear-gradient(135deg,#f59e0b,#ef4444)":"#1e1e22",border:"none",color:aiCfg.apiKey?"#fff":"#4b4b55",fontSize:13,fontWeight:600,cursor:"pointer"}}>
-              {aiCfg.apiKey?"✓ 保存并关闭":"请先填写 API Key"}
-            </button>
 
-            {/* 分割线 */}
-            <div style={{height:1,background:"#2a2a2e",margin:"16px 0 14px"}}/>
-            <div style={{fontSize:11,color:"#6b6b75",marginBottom:10}}>标签库配置 — 跨设备/浏览器永久保存</div>
+            <div style={{padding:"10px 18px",borderTop:"1px solid #1e1e22",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+              <div style={{fontSize:8,color:"#3a3a45"}}>文字/图片/视频帧自动存入 localStorage · 刷新后恢复（受5MB限制）</div>
+              <button onClick={()=>setShowKB(false)} style={{padding:"5px 16px",borderRadius:6,background:"linear-gradient(135deg,#a78bfa,#6366f1)",border:"none",color:"#fff",fontSize:10,fontWeight:600,cursor:"pointer"}}>完成</button>
+            </div>
+          </div>
+        </div>
+      )}
 
-            {/* 导出 */}
-            <button onClick={()=>exportConfig(tags, gameplays, tagId.current, gpId.current)}
-              style={{width:"100%",padding:9,borderRadius:8,background:"#1a2a1a",border:"1px solid #10b98133",color:"#10b981",fontSize:12,cursor:"pointer",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-              ↓ 导出标签配置（保存为 JSON 文件）
-            </button>
-
-            {/* 导入 */}
-            <input ref={importInputRef} type="file" accept=".json" style={{display:"none"}} onChange={async(e)=>{
-              const file = e.target.files?.[0];
-              if(!file) return;
-              e.target.value = "";
-              try {
-                const cfg = await importConfig(file);
-                setTags(cfg.tags);
-                setGameplays(cfg.gameplays);
-                if(cfg._tagIdNext) { tagId.current=cfg._tagIdNext; lsSet(LS_TAG_ID,cfg._tagIdNext); }
-                if(cfg._gpIdNext)  { gpId.current=cfg._gpIdNext;   lsSet(LS_GP_ID,cfg._gpIdNext); }
-                lsSet(LS_TAGS, cfg.tags);
-                lsSet(LS_GAMEPLAYS, cfg.gameplays);
-                setImportMsg("✓ 导入成功！");
-                setTimeout(()=>setImportMsg(""),3000);
-              } catch(err) {
-                setImportMsg("✕ 导入失败：" + err.message);
-                setTimeout(()=>setImportMsg(""),4000);
-              }
-            }}/>
-            <button onClick={()=>importInputRef.current?.click()}
-              style={{width:"100%",padding:9,borderRadius:8,background:"#1a1a2a",border:"1px solid #3b82f633",color:"#93c5fd",fontSize:12,cursor:"pointer",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
-              ↑ 导入标签配置（从 JSON 文件恢复）
-            </button>
-            {importMsg && (
-              <div style={{fontSize:11,padding:"6px 10px",borderRadius:6,background: importMsg.startsWith("✓")?"#14532d44":"#7f1d1d44",color: importMsg.startsWith("✓")?"#6ee7b7":"#fca5a5",marginBottom:8,textAlign:"center"}}>
-                {importMsg}
+      {/* ══════════════ 设置弹窗 ══════════════ */}
+      {showSettings&&(
+        <div onClick={e=>e.target===e.currentTarget&&setShowSettings(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:200}}>
+          <div style={{background:"#13131a",border:"1px solid #2a2a2e",borderRadius:14,width:460,maxWidth:"96vw",maxHeight:"92vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            <div style={{padding:"15px 20px 0",flexShrink:0}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:13}}>
+                <div><div style={{fontSize:14,fontWeight:700,color:"#fff"}}>⚙ 设置</div><div style={{fontSize:9,color:"#4b4b55",marginTop:2}}>配置信息自动保存，刷新后依然保留</div></div>
+                <button onClick={()=>setShowSettings(false)} style={{background:"none",border:"none",color:"#6b6b75",cursor:"pointer",fontSize:18,lineHeight:1}}>✕</button>
               </div>
-            )}
-
-            {/* 重置 */}
-            <button onClick={()=>{ if(!window.confirm("确认重置所有标签和玩法为默认值？")) return; setTags(INITIAL_TAGS); setGameplays(INITIAL_GAMEPLAYS); lsSet(LS_TAGS,INITIAL_TAGS); lsSet(LS_GAMEPLAYS,INITIAL_GAMEPLAYS); lsSet(LS_TAG_ID,300); lsSet(LS_GP_ID,100); tagId.current=300; gpId.current=100; setShowSettings(false); }}
-              style={{width:"100%",padding:9,borderRadius:8,background:"transparent",border:"1px solid #2a2a2e",color:"#6b6b75",fontSize:12,cursor:"pointer"}}>
-              ↺ 重置为默认标签
-            </button>
+              <div style={{display:"flex",borderBottom:"1px solid #1e1e22"}}>
+                {[{id:"api",label:"🤖 AI 模型配置"},{id:"tags",label:"🏷️ 标签库管理"}].map(t=><button key={t.id} onClick={()=>setSettingsTab(t.id)} style={{flex:1,padding:"9px 4px",background:"transparent",border:"none",borderBottom:settingsTab===t.id?"2px solid #f59e0b":"2px solid transparent",color:settingsTab===t.id?"#f59e0b":"#6b6b75",fontSize:11,cursor:"pointer",fontWeight:settingsTab===t.id?600:400}}>{t.label}</button>)}
+              </div>
+            </div>
+            <div style={{flex:1,overflowY:"auto",padding:"16px 20px"}}>
+              {settingsTab==="api"&&<div>
+                <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 11px",borderRadius:7,background:apiReady?"#0d1f16":"#1f0d0d",border:`1px solid ${apiReady?"#10b98133":"#7f1d1d44"}`,marginBottom:14}}>
+                  <span style={{fontSize:13}}>{apiReady?"✅":"⚠️"}</span>
+                  <div><div style={{fontSize:10,fontWeight:600,color:apiReady?"#10b981":"#f87171"}}>{apiReady?"AI 已就绪，可以开始生成":"请选择厂商并填写 API Key"}</div><div style={{fontSize:8,color:"#4b4b55",marginTop:1}}>当前：{prov.label}{aiCfg.model&&aiCfg.providerId!=="custom"?` / ${aiCfg.model}`:""}{aiCfg.customModel?` / ${aiCfg.customModel}`:""}</div></div>
+                  <span style={{marginLeft:"auto",fontSize:8,padding:"2px 7px",borderRadius:10,background:"#10b98115",color:"#10b981",border:"1px solid #10b98130",fontWeight:600,flexShrink:0}}>💾 自动保存</span>
+                </div>
+                <div style={{fontSize:10,color:"#6b6b75",marginBottom:8,fontWeight:500}}>选择 AI 厂商</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginBottom:16}}>
+                  {Object.entries(PROVIDERS).map(([id,p])=><button key={id} onClick={()=>setAiCfg(c=>({...c,providerId:id,model:p.defaultModel}))} style={{padding:"9px 11px",borderRadius:8,border:`1px solid ${aiCfg.providerId===id?"#f59e0b":"#2a2a2e"}`,background:aiCfg.providerId===id?"#f59e0b0d":"#1a1a1e",color:aiCfg.providerId===id?"#f59e0b":"#9ca3af",fontSize:10,cursor:"pointer",textAlign:"left",fontWeight:aiCfg.providerId===id?600:400,lineHeight:1.5}}>{p.label}</button>)}
+                </div>
+                {aiCfg.providerId==="custom"&&<div style={{marginBottom:12}}><div style={{fontSize:10,color:"#6b6b75",marginBottom:5}}>API 地址（OpenAI 兼容）</div><input value={aiCfg.customBaseURL} onChange={e=>setAiCfg(c=>({...c,customBaseURL:e.target.value}))} placeholder="https://your-proxy.com/v1/chat/completions" style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:7,padding:"9px 11px",color:"#e2e0db",fontSize:11,outline:"none",fontFamily:"monospace"}}/></div>}
+                {aiCfg.providerId==="custom"
+                  ?<div style={{marginBottom:14}}><div style={{fontSize:10,color:"#6b6b75",marginBottom:5}}>模型名称</div><input value={aiCfg.customModel} onChange={e=>setAiCfg(c=>({...c,customModel:e.target.value}))} placeholder="gpt-4o / deepseek-chat / qwen-max" style={{width:"100%",background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:7,padding:"9px 11px",color:"#e2e0db",fontSize:11,outline:"none",fontFamily:"monospace"}}/></div>
+                  :prov.models.length>0&&<div style={{marginBottom:14}}><div style={{fontSize:10,color:"#6b6b75",marginBottom:6}}>模型选择</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{prov.models.map(m=><button key={m} onClick={()=>setAiCfg(c=>({...c,model:m}))} style={{padding:"5px 11px",borderRadius:6,border:`1px solid ${aiCfg.model===m?"#f59e0b":"#2a2a2e"}`,background:aiCfg.model===m?"#f59e0b0d":"#1a1a1e",color:aiCfg.model===m?"#f59e0b":"#6b6b75",fontSize:9,cursor:"pointer",fontWeight:aiCfg.model===m?600:400}}>{m}</button>)}</div></div>
+                }
+                <div style={{marginBottom:5,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{fontSize:10,color:"#6b6b75",fontWeight:500}}>API Key</div>{aiCfg.apiKey&&<span style={{fontSize:8,color:"#10b981"}}>✓ 已填写</span>}</div>
+                <input type="password" value={aiCfg.apiKey} onChange={e=>setAiCfg(c=>({...c,apiKey:e.target.value}))} placeholder={prov.keyPlaceholder||"your-api-key"} style={{width:"100%",background:"#1a1a1e",border:`1px solid ${aiCfg.apiKey?"#10b98155":"#2a2a2e"}`,borderRadius:7,padding:"10px 11px",color:"#e2e0db",fontSize:12,outline:"none",fontFamily:"monospace"}}/>
+                <div style={{fontSize:8,color:"#3a3a45",marginTop:6,lineHeight:1.6}}>Key 存储于浏览器 localStorage，<b style={{color:"#10b981"}}>刷新页面后依然保留</b>，不上传任何服务器。</div>
+              </div>}
+              {settingsTab==="tags"&&<div>
+                <div style={{fontSize:9,color:"#6b6b75",marginBottom:10,lineHeight:1.6,background:"#1a1a1e",padding:"8px 11px",borderRadius:6}}>标签库数据保存在浏览器本地，可导出 JSON 文件备份，在新设备上导入恢复。</div>
+                <button onClick={()=>exportConfig(tags,gameplays,tagId.current,gpId.current)} style={{width:"100%",padding:9,borderRadius:7,background:"#1a2a1a",border:"1px solid #10b98133",color:"#10b981",fontSize:10,cursor:"pointer",marginBottom:7,display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>↓ 导出标签配置（JSON 文件）</button>
+                <input ref={importInputRef} type="file" accept=".json" style={{display:"none"}} onChange={async e=>{const f=e.target.files?.[0];if(!f)return;e.target.value="";try{const cfg=await importConfig(f);setTags(cfg.tags);setGameplays(cfg.gameplays);if(cfg._tagIdNext){tagId.current=cfg._tagIdNext;lsSet(LS_TAG_ID,cfg._tagIdNext);}if(cfg._gpIdNext){gpId.current=cfg._gpIdNext;lsSet(LS_GP_ID,cfg._gpIdNext);}lsSet(LS_TAGS,cfg.tags);lsSet(LS_GAMEPLAYS,cfg.gameplays);setImportMsg("✓ 导入成功！");setTimeout(()=>setImportMsg(""),3000);}catch(err){setImportMsg("✕ 导入失败："+err.message);setTimeout(()=>setImportMsg(""),4000);}}}/>
+                <button onClick={()=>importInputRef.current?.click()} style={{width:"100%",padding:9,borderRadius:7,background:"#1a1a2a",border:"1px solid #3b82f633",color:"#93c5fd",fontSize:10,cursor:"pointer",marginBottom:7,display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>↑ 导入标签配置（从 JSON 恢复）</button>
+                {importMsg&&<div style={{fontSize:9,padding:"5px 9px",borderRadius:5,background:importMsg.startsWith("✓")?"#14532d44":"#7f1d1d44",color:importMsg.startsWith("✓")?"#6ee7b7":"#fca5a5",marginBottom:7,textAlign:"center"}}>{importMsg}</div>}
+                <div style={{height:1,background:"#1e1e22",margin:"12px 0"}}/>
+                <button onClick={()=>{if(!window.confirm("确认重置所有标签和玩法为默认值？"))return;setTags(INITIAL_TAGS);setGameplays(INITIAL_GAMEPLAYS);lsSet(LS_TAGS,INITIAL_TAGS);lsSet(LS_GAMEPLAYS,INITIAL_GAMEPLAYS);lsSet(LS_TAG_ID,300);lsSet(LS_GP_ID,100);tagId.current=300;gpId.current=100;}} style={{width:"100%",padding:9,borderRadius:7,background:"transparent",border:"1px solid #2a2a2e",color:"#6b6b75",fontSize:10,cursor:"pointer"}}>↺ 重置为默认标签</button>
+              </div>}
+            </div>
+            <div style={{padding:"11px 20px",borderTop:"1px solid #1e1e22",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+              <span style={{fontSize:8,color:"#3a3a45"}}>所有配置自动保存至 localStorage</span>
+              <button onClick={()=>setShowSettings(false)} style={{padding:"6px 22px",borderRadius:7,background:"linear-gradient(135deg,#f59e0b,#ef4444)",border:"none",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>完成</button>
+            </div>
           </div>
         </div>
       )}
