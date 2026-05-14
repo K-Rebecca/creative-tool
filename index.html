@@ -326,6 +326,9 @@ function App(){
   // ── 主功能 ────────────────────────────────────────────────────────────────
   const[topic,setTopic]=useState("");
   const[loadingIdeas,setLoadingIdeas]=useState(false);
+  const[loadingPipeline,setLoadingPipeline]=useState(false);
+  const[pipelineScript,setPipelineScript]=useState(null);
+  const[pipelineErr,setPipelineErr]=useState("");
   const[ideas,setIdeas]=useState([]);
   const[ideasErr,setIdeasErr]=useState("");
   const[selectedIdea,setSelectedIdea]=useState(null);
@@ -361,6 +364,21 @@ function App(){
   const typeIcon={text:"📄",script:"📝",image:"🖼️",video:"🎬"};
   const typeColor={text:"#60a5fa",script:"#a78bfa",image:"#34d399",video:"#fb923c"};
   const typeLabel={text:"文字",script:"脚本",image:"图片",video:"视频"};
+  const generatePipelineScript=async()=>{
+    if(!topic.trim())return;
+    setLoadingPipeline(true);setPipelineErr("");setPipelineScript(null);
+    try{
+      const sys=`你是买量创意团队的增长策略总监。请严格按“素材入库 → AI理解 → 标签沉淀 → 爆量拆解 → 需求生成 → AI参考生成 → 人工制作 → 投放反馈 → 反哺标签和策略”九步输出可落地执行脚本。
+只输出JSON对象，禁止markdown。
+格式：{"name":"流程名","steps":[{"stage":"阶段名","goal":"阶段目标","input":["输入1"],"action":["动作1"],"output":["产出1"],"owner":"责任角色","metric":"关键指标"}],"cadence":"执行节奏","loop":"复盘闭环"}`;
+      const user=`业务方向：${topic}\n玩法：${activeGP}\n当前启用标签：${activeTags.map(t=>t.split(": ")[1]).join("、")}\n知识库条目：${activeKB.map(i=>`${i.name}(${typeLabel[i.type]||i.type})`).join("、")||"无"}`;
+      const raw=await callAI(sys,user,activeKB,aiCfg);
+      const parsed=robustParse(raw);
+      if(!parsed||!parsed.steps)throw new Error("返回格式解析失败");
+      setPipelineScript(parsed);
+    }catch(e){setPipelineErr(e.message||"生成失败");}
+    setLoadingPipeline(false);
+  };
   const prov=PROVIDERS[aiCfg.providerId]||PROVIDERS.anthropic;
   const apiReady=!!aiCfg.apiKey;
 
@@ -481,6 +499,7 @@ function App(){
             <div style={{display:"flex",gap:6}}>
               <input value={topic} onChange={e=>setTopic(e.target.value)} onKeyDown={e=>e.key==="Enter"&&generateIdeas()} placeholder={`例如：${activeGP}游戏关卡挑战，激发玩家尝试欲...`} style={{flex:1,background:"#1a1a1e",border:"1px solid #2a2a2e",borderRadius:6,padding:"8px 11px",color:"#e2e0db",fontSize:11,outline:"none"}}/>
               <button onClick={generateIdeas} disabled={loadingIdeas} style={{padding:"8px 16px",borderRadius:6,background:loadingIdeas?"#1e1e22":"linear-gradient(135deg,#f59e0b,#ef4444)",border:"none",color:loadingIdeas?"#4b4b55":"#fff",fontSize:11,fontWeight:600,cursor:loadingIdeas?"not-allowed":"pointer",whiteSpace:"nowrap",flexShrink:0}}>{loadingIdeas?"生成中...":"✦ 发散"}</button>
+              <button onClick={generatePipelineScript} disabled={loadingPipeline||!topic.trim()} style={{padding:"8px 14px",borderRadius:6,background:loadingPipeline?"#1e1e22":"#1a1a2a",border:"1px solid #3b82f633",color:loadingPipeline?"#4b4b55":"#93c5fd",fontSize:11,fontWeight:600,cursor:loadingPipeline?"not-allowed":"pointer",whiteSpace:"nowrap",flexShrink:0}}>{loadingPipeline?"生成中...":"◎ 流程脚本"}</button>
             </div>
             {ideasErr&&<div style={{color:"#f87171",fontSize:9,marginTop:3}}>{ideasErr}</div>}
           </div>
@@ -489,6 +508,18 @@ function App(){
             <div style={{flex:ideas.length?"0 0 280px":1,overflowY:"auto",padding:9,borderRight:ideas.length?"1px solid #1e1e22":"none"}}>
               {ideas.length>0&&!loadingIdeas&&<button onClick={generateIdeas} style={{width:"100%",marginBottom:7,padding:"5px",borderRadius:6,background:"transparent",border:"1px dashed #2a2a2e",color:"#6b6b75",fontSize:9,cursor:"pointer"}} onMouseEnter={e=>{e.currentTarget.style.borderColor="#f59e0b66";e.currentTarget.style.color="#f59e0b";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="#2a2a2e";e.currentTarget.style.color="#6b6b75";}}>↺ 重新生成</button>}
               {!ideas.length&&!loadingIdeas&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"55%",textAlign:"center"}}><div style={{fontSize:28,color:"#2a2a35",marginBottom:7}}>✦</div><div style={{fontSize:11,color:"#3a3a45"}}>输入方向，发散创意</div><div style={{fontSize:9,color:"#2a2a35",marginTop:3}}>AI 结合标签{activeKB.length?"+知识库":""}生成 5 个方向</div></div>}
+              {pipelineErr&&<div style={{marginTop:8,background:"#2a1212",border:"1px solid #7f1d1d",borderRadius:6,padding:"7px 9px",fontSize:10,color:"#fca5a5"}}>⚠ {pipelineErr}</div>}
+              {pipelineScript&&<div style={{marginTop:8,border:"1px solid #1e1e22",borderRadius:8,padding:8,background:"#111118"}}>
+                <div style={{fontSize:10,fontWeight:700,color:"#93c5fd",marginBottom:6}}>{pipelineScript.name||"素材创意发散流程脚本"}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:220,overflowY:"auto"}}>
+                  {(pipelineScript.steps||[]).map((st,i)=><div key={i} style={{border:"1px solid #2a2a2e",borderRadius:6,padding:6,background:"#15151d"}}>
+                    <div style={{fontSize:9,color:"#f59e0b",fontWeight:600,marginBottom:3}}>{i+1}. {st.stage}</div>
+                    <div style={{fontSize:8,color:"#9ca3af",lineHeight:1.5}}>目标：{st.goal}</div>
+                    <div style={{fontSize:8,color:"#6b7280",lineHeight:1.5}}>动作：{(st.action||[]).join("；")}</div>
+                    <div style={{fontSize:8,color:"#6b7280",lineHeight:1.5}}>产出：{(st.output||[]).join("、")}</div>
+                  </div>)}
+                </div>
+              </div>}
               {loadingIdeas&&[1,2,3,4].map(i=><div key={i} className="pulse" style={{background:"#1a1a1e",borderRadius:7,padding:10,marginBottom:6}}><div style={{height:11,background:"#2a2a2e",borderRadius:3,width:"55%",marginBottom:6}}/><div style={{height:8,background:"#2a2a2e",borderRadius:3,width:"85%",marginBottom:3}}/><div style={{height:8,background:"#2a2a2e",borderRadius:3,width:"70%"}}/></div>)}
               {ideas.map((idea,i)=>(
                 <div key={i} className="fade-up" onClick={()=>selectIdea(idea)} style={{background:selectedIdea?.title===idea.title?"#1c1a0f":"#1a1a1e",border:`1px solid ${selectedIdea?.title===idea.title?"#f59e0b44":"#2a2a2e"}`,borderRadius:7,padding:9,marginBottom:6,cursor:"pointer"}}>
